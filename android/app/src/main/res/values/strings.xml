@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Sapsan POS</string>
+    <string name="title_activity_main">Sapsan POS</string>
+    <string name="package_name">com.sapsan.posapp</string>
+    <string name="custom_url_scheme">com.sapsan.posapp</string>
+</resources>

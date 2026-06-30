@@ -46,21 +46,35 @@ export default function App() {
       }
 
       try {
+        // 🆕 system එකේ db.admins table එකේ account එකක්වත් නැද්ද කියලා මුලින්ම check කරනවා
+        // (අලුත් POS install එකක දාපුවහාම admin කෙනෙක් නැති නිසා panel එකට යන්න බෑ වෙච්ච bug එක මෙතනින් fix වෙනවා)
+        const totalAdminCount = await db.admins.count();
+
+        if (totalAdminCount === 0) {
+          // 🟢 System එකේ admin කෙනෙක්වත් නැහැ - default admin / 1234 එකෙන් witharak login වෙන්න ඉඩ දෙනවා
+          if (username.toLowerCase() === 'admin' && password === '1234') {
+            setCurrentScreen('ADMIN');
+            Swal.fire({
+              icon: 'success',
+              title: 'ස්වාගතවාදෙයි Admin! (Default Account)',
+              text: 'කරුණාකර Profile Settings වෙත ගොස් ඔබගේ සැබෑ Admin ගිණුමක් සාදන්න.',
+              confirmButtonColor: '#4f46e5'
+            });
+          } else {
+            Swal.fire({ icon: 'error', title: 'Login Failed!', text: 'System එකේ admin ගිණුමක් තවම නැත. Default username: admin, password: 1234 උපයෝගී කරගන්න.', confirmButtonColor: '#ef4444' });
+          }
+          return;
+        }
+
         // ✅ db.admins table එකෙන් user එක සොයනවා (case-insensitive)
         const matchedAdmin = await db.admins
           .where('username')
           .equalsIgnoreCase(username)
           .first();
 
-        // 🟢 Fallback: db එකේ admin කෙනෙක් නැත්නම් default admin/1234 එකෙන් login වෙන්න පුළුවන්
-        const isDefaultAdmin = username.toLowerCase() === 'admin' && password === '1234';
-
         if (matchedAdmin && matchedAdmin.password === password) {
           setCurrentScreen('ADMIN');
           Swal.fire({ icon: 'success', title: `ස්වාගතවාදෙයි ${matchedAdmin.username}!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
-        } else if (!matchedAdmin && isDefaultAdmin) {
-          setCurrentScreen('ADMIN');
-          Swal.fire({ icon: 'success', title: 'ස්වාගතවාදෙයි Admin!', toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
         } else {
           Swal.fire({ icon: 'error', title: 'Login Failed!', text: 'Username හෝ Password වැරදියි. ❌', confirmButtonColor: '#ef4444' });
         }

@@ -147,7 +147,7 @@ export default function AdminPanel({ onBackToBilling }) {
   const sortedInvoiceList = [...filteredOrders].sort((a, b) => new Date(b.settledDate) - new Date(a.settledDate));
 
   // ==========================================
-  // 🖨️ BLUETOOTH PRINTER CONFIG
+  // 🖨️ PRINTER CONFIG (Bluetooth + USB + Serial)
   // ==========================================
   const [pairedDevices, setPairedDevices] = useState(() => {
     const saved = localStorage.getItem('pos_paired_bluetooth_devices');
@@ -166,22 +166,122 @@ export default function AdminPanel({ onBackToBilling }) {
     localStorage.setItem('pos_printer_mapping', JSON.stringify(printerMapping));
   }, [printerMapping]);
 
+  // 🔵 Device eka list eke add karanna helper
+  const addDevice = (newDevice) => {
+    setPairedDevices(prev => {
+      if (prev.some(d => d.id === newDevice.id)) return prev;
+      return [...prev, newDevice];
+    });
+  };
+
+  // 🔵 දැනටමත් OS level eka paired/authorized BT devices load කිරීම (re-scan නොකර)
+  const handleLoadPairedBluetooth = async () => {
+    if (!navigator.bluetooth) {
+      Swal.fire({ icon: 'error', title: 'Bluetooth Supported නැත!', text: 'Chrome හෝ Edge browser use කරන්න.' });
+      return;
+    }
+    try {
+      const devices = await navigator.bluetooth.getDevices();
+      const named = devices.filter(d => d.name);
+      if (named.length === 0) {
+        Swal.fire({ icon: 'info', title: 'No Paired devices found', text: 'Try "Scan New BT Device" to add a new printer.' });
+        return;
+      }
+      named.forEach(d => addDevice({ id: d.id, name: d.name, type: 'BLUETOOTH' }));
+      Swal.fire({ icon: 'success', title: `${named.length} Bluetooth device(s) load successfully!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 1800 });
+    } catch (err) {
+      console.error(err);
+      Swal.fire({ icon: 'error', title: 'Failed to Load Devices!', text: err.message });
+    }
+  };
+
+  // 🔵 නව Bluetooth printer scan කිරීම (OS pair dialog ගෙනෙනවා)
   const handleScanBluetooth = async () => {
     if (!navigator.bluetooth) {
-      Swal.fire({ icon: 'error', title: 'Bluetooth Not Supported!' });
+      Swal.fire({ icon: 'error', title: 'Bluetooth not Supported!', text: 'Use Chrome or Edge browser' });
       return;
     }
     setIsScanning(true);
     try {
       const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true });
-      if (device.name && !pairedDevices.some(d => d.id === device.id)) {
-        setPairedDevices([...pairedDevices, { id: device.id, name: device.name }]);
-        Swal.fire({ icon: 'success', title: 'Device Added! ✅', text: device.name, showConfirmButton: false, timer: 1500 });
+      if (device.name) {
+        addDevice({ id: device.id, name: device.name, type: 'BLUETOOTH' });
+        Swal.fire({ icon: 'success', title: `✅ ${device.name} Add successfully!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 1800 });
       }
-    } catch (err) { console.error(err); } finally { setIsScanning(false); }
+    } catch (err) {
+      if (err.name !== 'NotFoundError') console.error(err);
+    } finally { setIsScanning(false); }
   };
 
-  const handleMappingChange = (role, name) => setPrinterMapping(prev => ({ ...prev, [role]: name }));
+  // 🟡 USB Cable printer connect කිරීම (PC සඳහා)
+  const handleConnectUSB = async () => {
+    if (!navigator.usb) {
+      Swal.fire({ icon: 'error', title: 'WebUSB not Supported!', text: 'Use Chrome or Edge browser (v61+)' });
+      return;
+    }
+    try {
+      const device = await navigator.usb.requestDevice({ filters: [] });
+      const name = device.productName || `USB Printer (${device.vendorId.toString(16).toUpperCase()})`;
+      const id = `usb-${device.vendorId}-${device.productId}`;
+      addDevice({ id, name, type: 'USB', vendorId: device.vendorId, productId: device.productId });
+      Swal.fire({ icon: 'success', title: `✅ ${name} Added successfully!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 1800 });
+    } catch (err) {
+      if (err.name !== 'NotFoundError') console.error(err);
+    }
+  };
+
+  // 🟢 COM Port / Serial printer connect කිරීම (PC cable printers සඳහා)
+  const handleConnectSerial = async () => {
+    if (!navigator.serial) {
+      Swal.fire({ icon: 'error', title: 'Web Serial not Supported!', text: 'Use Chrome or Edge browser (v89+)' });
+      return;
+    }
+    try {
+      const port = await navigator.serial.requestPort();
+      const info = port.getInfo();
+      const id = `serial-${info.usbVendorId || 'com'}-${info.usbProductId || Date.now()}`;
+      const name = (info.usbVendorId) ? `Serial Printer (VID:${info.usbVendorId.toString(16).toUpperCase()})` : 'COM Port Printer';
+      addDevice({ id, name, type: 'SERIAL' });
+      Swal.fire({ icon: 'success', title: `✅ ${name} Added successfully!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 1800 });
+    } catch (err) {
+      if (err.name !== 'NotFoundError') console.error(err);
+    }
+  };
+
+  // 🔴 Device eka list එකෙන් ඉවත් කිරීම
+  const handleRemoveDevice = (deviceId) => {
+    setPairedDevices(prev => prev.filter(d => d.id !== deviceId));
+    // Mapping eke eka use kara tibba nam clear karanna
+    setPrinterMapping(prev => {
+      const updated = { ...prev };
+      const removed = pairedDevices.find(d => d.id === deviceId);
+      if (removed) {
+        Object.keys(updated).forEach(role => {
+          if (updated[role] === removed.name) updated[role] = '';
+        });
+      }
+      return updated;
+    });
+  };
+
+  const handleMappingChange = (role, deviceId) => {
+    const device = pairedDevices.find(d => d.id === deviceId);
+    setPrinterMapping(prev => ({ ...prev, [role]: deviceId, [`${role}_name`]: device ? device.name : '' }));
+  };
+
+  // Type badge color helper
+  const typeColor = (type) => {
+    if (type === 'BLUETOOTH') return 'bg-blue-100 text-blue-700';
+    if (type === 'USB') return 'bg-yellow-100 text-yellow-700';
+    if (type === 'SERIAL') return 'bg-green-100 text-green-700';
+    return 'bg-gray-100 text-gray-600';
+  };
+  const typeLabel = (type) => {
+    if (type === 'BLUETOOTH') return '🔵 BT';
+    if (type === 'USB') return '🟡 USB';
+    if (type === 'SERIAL') return '🟢 COM';
+    return type;
+  };
 
   // ==========================================
   // 📂 CATEGORY OPERATIONALS
@@ -199,7 +299,7 @@ export default function AdminPanel({ onBackToBilling }) {
   };
 
   const handleDeleteCategory = async (id) => {
-    const result = await Swal.fire({ title: 'Are you sure?', text: "ප්‍රවර්ගය මකන්නද?", icon: 'warning', showCancelButton: true, confirmButtonColor: '#ef4444', confirmButtonText: 'Yes' });
+    const result = await Swal.fire({ title: 'Are you sure?', text: "Delete this category?", icon: 'warning', showCancelButton: true, confirmButtonColor: '#ef4444', confirmButtonText: 'Yes' });
     if (result.isConfirmed) { await db.categories.delete(id); }
   };
 
@@ -229,7 +329,7 @@ export default function AdminPanel({ onBackToBilling }) {
   };
 
   const handleDeleteItem = async (id) => {
-    const result = await Swal.fire({ title: 'Are you sure?', text: "අයිතමය මකන්නද?", icon: 'warning', showCancelButton: true, confirmButtonColor: '#ef4444', confirmButtonText: 'Yes' });
+    const result = await Swal.fire({ title: 'Are you sure?', text: "Delete this item?", icon: 'warning', showCancelButton: true, confirmButtonColor: '#ef4444', confirmButtonText: 'Yes' });
     if (result.isConfirmed) { await db.items.delete(id); }
   };
 
@@ -260,7 +360,7 @@ export default function AdminPanel({ onBackToBilling }) {
         // Duplicate එකක්දැයි පරීක්ෂා කිරීම
         const existing = await db.admins.where('username').equalsIgnoreCase(data.username).first();
         if (existing) {
-          Swal.fire({ icon: 'error', title: 'Username Already Exists!', text: 'වෙනත් පරිශීලක නාමයක් ඇතුළත් කරන්න.' });
+          Swal.fire({ icon: 'error', title: 'Username Already Exists!', text: 'Use a different username.' });
           return;
         }
         await db.admins.add(data);
@@ -274,14 +374,14 @@ export default function AdminPanel({ onBackToBilling }) {
       setEditingAdminId(null);
     } catch (error) {
       console.error("Error saving admin:", error);
-      Swal.fire({ icon: 'error', title: 'Database Error', text: 'දත්ත සුරැකීමේදී ගැටලුවක් මතු විය.' });
+      Swal.fire({ icon: 'error', title: 'Database Error', text: 'Error saving admin.' });
     }
   };
 
   const handleDeleteAdmin = async (id) => {
     const result = await Swal.fire({ 
       title: 'Are you sure?', 
-      text: "මෙම ගිණුම මකා දැමීමට ඔබට විශ්වාසද?", 
+      text: "Delete this admin account?", 
       icon: 'warning', 
       showCancelButton: true, 
       confirmButtonColor: '#ef4444', 
@@ -303,7 +403,7 @@ export default function AdminPanel({ onBackToBilling }) {
           <span className="text-2xl">⚙️</span>
           <div>
             <h1 className="text-lg font-black tracking-wide">Admin Control Panel</h1>
-            <p className="text-xs text-gray-400">POS පද්ධතියේ සැකසුම් සහ පරිශීලක කළමනාකරණය</p>
+            <p className="text-xs text-gray-400">POS System Administration and User Management</p>
           </div>
         </div>
         <button onClick={onBackToBilling} className="bg-gray-900 hover:bg-black text-white px-4 py-2 rounded-xl font-bold text-xs transition">
@@ -730,21 +830,141 @@ export default function AdminPanel({ onBackToBilling }) {
 
         {/* PRINTERS WORKSPACE */}
         {activeSubTab === 'PRINTERS' && (
-          <div className="col-span-12 bg-white p-6 rounded-2xl border h-full flex flex-col justify-between">
-            <div className="space-y-4">
-              <h3 className="text-sm font-black uppercase text-gray-700">🖨️ Thermal Printer Mapping</h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {['kot', 'bot', 'bill'].map((role) => (
-                  <div key={role} className="border p-4 rounded-xl bg-gray-50">
-                    <label className="block text-xs font-black text-gray-500 uppercase">{role}</label>
-                    <select value={printerMapping[role]} onChange={(e) => handleMappingChange(role, e.target.value)} className="w-full p-2 border rounded bg-white text-xs">
-                      <option value="">No Printer Assigned</option>
-                      {pairedDevices.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
-                    </select>
+          <div className="col-span-12 bg-white rounded-2xl border h-full flex flex-col overflow-hidden">
+            <div className="flex-1 overflow-y-auto p-4 space-y-5">
+
+              {/* ── STEP 1: Add Printers ── */}
+              <div>
+                <h3 className="text-xs font-black text-gray-400 uppercase mb-2">① Add Printers</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+
+                  {/* Bluetooth section */}
+                  <div className="border rounded-xl p-3 bg-blue-50 space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-lg">🔵</span>
+                      <div>
+                        <div className="font-black text-xs text-blue-800">Bluetooth Printer</div>
+                        <div className="text-[10px] text-blue-500">Mobile / Tablet for</div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleLoadPairedBluetooth}
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black py-2 rounded-lg transition"
+                    >
+                      📋 Load Paired BT Devices
+                    </button>
+                    <button
+                      onClick={handleScanBluetooth}
+                      disabled={isScanning}
+                      className="w-full bg-white border border-blue-300 hover:bg-blue-100 text-blue-700 text-[11px] font-black py-2 rounded-lg transition disabled:opacity-50"
+                    >
+                      {isScanning ? '⏳ Scanning...' : '🔍 Scan New BT Device'}
+                    </button>
                   </div>
-                ))}
+
+                  {/* USB Cable section */}
+                  <div className="border rounded-xl p-3 bg-yellow-50 space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-lg">🟡</span>
+                      <div>
+                        <div className="font-black text-xs text-yellow-800">USB Cable Printer</div>
+                        <div className="text-[10px] text-yellow-600">PC / Laptop (USB port)</div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleConnectUSB}
+                      className="w-full bg-yellow-500 hover:bg-yellow-600 text-white text-[11px] font-black py-2 rounded-lg transition"
+                    >
+                      🔌 Connect USB Printer
+                    </button>
+                    <div className="text-[9px] text-yellow-700 bg-yellow-100 rounded-lg p-1.5 text-center">
+                      Chrome / Edge v61+ <br/>USB cable printer directly connect
+                    </div>
+                  </div>
+
+                  {/* Serial / COM Port section */}
+                  <div className="border rounded-xl p-3 bg-green-50 space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-lg">🟢</span>
+                      <div>
+                        <div className="font-black text-xs text-green-800">COM / Serial Printer</div>
+                        <div className="text-[10px] text-green-600">PC COM Port / RS232</div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleConnectSerial}
+                      className="w-full bg-green-600 hover:bg-green-700 text-white text-[11px] font-black py-2 rounded-lg transition"
+                    >
+                      🔗 Connect Serial Printer
+                    </button>
+                    <div className="text-[9px] text-green-700 bg-green-100 rounded-lg p-1.5 text-center">
+                      Chrome / Edge v89+ <br/>COM port printer / RS232 adapter
+                    </div>
+                  </div>
+                </div>
               </div>
-              <button onClick={handleScanBluetooth} className="bg-indigo-600 text-white text-xs p-2 rounded-xl font-bold">🔍 Scan Bluetooth Devices</button>
+
+              {/* ── STEP 2: Added Devices List ── */}
+              <div>
+                <h3 className="text-xs font-black text-gray-400 uppercase mb-2">② Added Printers ({pairedDevices.length})</h3>
+                {pairedDevices.length === 0 ? (
+                  <div className="text-center text-gray-400 text-xs font-bold py-6 border rounded-xl bg-gray-50">
+                   No Printer devices added. Use the buttons above.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {pairedDevices.map(d => (
+                      <div key={d.id} className="flex items-center justify-between bg-gray-50 border rounded-xl px-3 py-2">
+                        <div className="flex items-center space-x-2">
+                          <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${typeColor(d.type)}`}>{typeLabel(d.type)}</span>
+                          <span className="font-bold text-xs text-gray-800">{d.name}</span>
+                        </div>
+                        <button
+                          onClick={() => handleRemoveDevice(d.id)}
+                          className="text-red-400 hover:text-red-600 text-[10px] font-black px-2 py-1 rounded-lg hover:bg-red-50"
+                        >
+                          ✕ Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* ── STEP 3: Assign to Roles ── */}
+              <div>
+                <h3 className="text-xs font-black text-gray-400 uppercase mb-2">③ Assign Printer Roles</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {[
+                    { role: 'kot', label: '🔥 KOT', desc: 'Kitchen Order Ticket', color: 'border-orange-200 bg-orange-50' },
+                    { role: 'bot', label: '🍹 BOT', desc: 'Bar Order Ticket', color: 'border-blue-200 bg-blue-50' },
+                    { role: 'bill', label: '🧾 BILL', desc: 'Customer Bill / Receipt', color: 'border-emerald-200 bg-emerald-50' },
+                  ].map(({ role, label, desc, color }) => (
+                    <div key={role} className={`border-2 p-4 rounded-xl ${color}`}>
+                      <div className="font-black text-sm text-gray-700 mb-0.5">{label}</div>
+                      <div className="text-[10px] text-gray-400 mb-2">{desc}</div>
+                      <select
+                        value={printerMapping[role] || ''}
+                        onChange={(e) => handleMappingChange(role, e.target.value)}
+                        className="w-full p-2 border rounded-lg bg-white text-xs font-bold"
+                      >
+                        <option value="">— No Printer Assigned —</option>
+                        {pairedDevices.map(d => (
+                          <option key={d.id} value={d.id}>
+                            {typeLabel(d.type)} {d.name}
+                          </option>
+                        ))}
+                      </select>
+                      {printerMapping[role] && (
+                        <div className="text-[10px] text-gray-500 mt-1 font-bold">
+                          ✅ {pairedDevices.find(d => d.id === printerMapping[role])?.name || 'Assigned'}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
             </div>
           </div>
         )}
@@ -759,7 +979,7 @@ export default function AdminPanel({ onBackToBilling }) {
                   <h3 className="text-sm font-black text-gray-700 uppercase">
                     {editingAdminId ? '📝 Edit Profile User' : '➕ Add System Account'}
                   </h3>
-                  <p className="text-[11px] text-gray-400">Cashier හෝ Admin ගිණුම් කළමනාකරණය</p>
+                  <p className="text-[11px] text-gray-400">Cashier and Admin Account Management</p>
                 </div>
                 
                 <div>

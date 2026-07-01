@@ -59,18 +59,8 @@ export default function BillingScreen({ isTakeaway = false }) {
   const ESC_FONT_NORMAL = new Uint8Array([0x1B, 0x45, 0x00]);
   const ESC_FEED_PAPER = new Uint8Array([0x1D, 0x56, 0x42, 0x03]);
 
-  const printViaBluetooth = async (targetRole, receiptDataArray) => {
-    const mappingSaved = localStorage.getItem('pos_printer_mapping');
-    if (!mappingSaved) return false;
-    
-    const mapping = JSON.parse(mappingSaved);
-    const targetPrinterName = mapping[targetRole];
-
-    if (!targetPrinterName) {
-      console.log(`⚠️ Printer not assigned for: ${targetRole.toUpperCase()}`);
-      return false;
-    }
-
+  // 🔵 Bluetooth (Wireless) Printer වෙත print කිරීම
+  const printViaBluetoothDevice = async (targetPrinterName, targetRole, receiptDataArray) => {
     try {
       const device = await navigator.bluetooth.requestDevice({
         filters: [{ name: targetPrinterName }],
@@ -98,7 +88,7 @@ export default function BillingScreen({ isTakeaway = false }) {
       Swal.fire({
         icon: 'error',
         title: `${targetRole.toUpperCase()} Print Failed!`,
-        text: 'පින්ටර් එක On කර ඇතිදැයි හෝ රේන්ජ් එකේ තිබේදැයි බලන්න.',
+        text: 'Check the Bluetooth printer connection and ensure it is powered on.',
         toast: true,
         position: 'top-end',
         showConfirmButton: false,
@@ -106,6 +96,155 @@ export default function BillingScreen({ isTakeaway = false }) {
       });
       return false;
     }
+  };
+
+  // 🔌 Cable (USB) Printer වෙත print කිරීම - PC/Laptop එකක Web Serial API එක හරහා
+  const printViaUsbCableDevice = async (vendorId, productId, targetRole, receiptDataArray) => {
+    if (!navigator.serial) {
+      Swal.fire({
+        icon: 'error',
+        title: `${targetRole.toUpperCase()} Cable Print Failed!`,
+        text: 'This Browser does not support USB/Cable Printing. Use Chrome or Edge (Desktop).',
+        toast: true,
+        position: 'top-end',
+        showConfirmButton: false,
+        timer: 3500
+      });
+      return false;
+    }
+
+    let matchedPort = null;
+    try {
+      const ports = await navigator.serial.getPorts();
+      matchedPort = ports.find(p => {
+        const info = p.getInfo ? p.getInfo() : {};
+        return String(info.usbVendorId) === String(vendorId) && String(info.usbProductId) === String(productId);
+      });
+
+      if (!matchedPort) {
+        Swal.fire({
+          icon: 'error',
+          title: `${targetRole.toUpperCase()} Cable Printer Not Found!`,
+          text: 'Admin Panel → Printer Settings go and reconnect the USB printer.',
+          toast: true,
+          position: 'top-end',
+          showConfirmButton: false,
+          timer: 3500
+        });
+        return false;
+      }
+
+      await matchedPort.open({ baudRate: 9600 });
+      const writer = matchedPort.writable.getWriter();
+
+      for (const data of receiptDataArray) {
+        await writer.write(data);
+      }
+      await writer.write(ESC_FEED_PAPER);
+
+      writer.releaseLock();
+      await matchedPort.close();
+      return true;
+    } catch (err) {
+      console.error(`USB Cable Printing Error on ${targetRole}: `, err);
+      try { if (matchedPort && matchedPort.readable) await matchedPort.close(); } catch (closeErr) { /* ignore */ }
+      Swal.fire({
+        icon: 'error',
+        title: `${targetRole.toUpperCase()} Cable Print Failed!`,
+        text: 'Check the USB printer connection and ensure it is powered on.',
+        toast: true,
+        position: 'top-end',
+        showConfirmButton: false,
+        timer: 3500
+      });
+      return false;
+    }
+  };
+
+  // 🟡 WebUSB Printer (cable, USB port) — navigator.usb API
+  const printViaWebUSB = async (deviceInfo, targetRole, receiptDataArray) => {
+    if (!navigator.usb) {
+      Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} USB Print Failed!`, text: 'WebUSB Supported නැත. Chrome / Edge (Desktop) use කරන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
+      return false;
+    }
+    let usbDevice = null;
+    try {
+      const granted = await navigator.usb.getDevices();
+      usbDevice = granted.find(d => d.vendorId === deviceInfo.vendorId && d.productId === deviceInfo.productId);
+      if (!usbDevice) {
+        Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} USB Printer Not Found!`, text: 'Admin Panel → Printer Settings වෙත ගොස් USB printer නැවත Connect කරන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
+        return false;
+      }
+      await usbDevice.open();
+      if (usbDevice.configuration === null) await usbDevice.selectConfiguration(1);
+      await usbDevice.claimInterface(0);
+
+      for (const data of receiptDataArray) await usbDevice.transferOut(1, data);
+      await usbDevice.transferOut(1, ESC_FEED_PAPER);
+      await usbDevice.close();
+      return true;
+    } catch (err) {
+      console.error(`WebUSB Print Error on ${targetRole}:`, err);
+      try { if (usbDevice) await usbDevice.close(); } catch (_) { /* ignore */ }
+      Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} USB Print Failed!`, text: 'Printer cable connect කර on කර ඇතිදැයි බලන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
+      return false;
+    }
+  };
+
+  // 🟢 Serial/COM Port Printer — navigator.serial API
+  const printViaSerialPort = async (deviceInfo, targetRole, receiptDataArray) => {
+    if (!navigator.serial) {
+      Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} Serial Print Failed!`, text: 'Web Serial Supported නැත. Chrome / Edge v89+ use කරන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
+      return false;
+    }
+    let port = null;
+    try {
+      const ports = await navigator.serial.getPorts();
+      port = ports[0]; // Admin panel ekenma authorize karapu port eka
+      if (!port) {
+        Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} COM Printer Not Found!`, text: 'Admin Panel → Printer Settings වෙත ගොස් Serial printer නැවත Connect කරන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
+        return false;
+      }
+      await port.open({ baudRate: 9600 });
+      const writer = port.writable.getWriter();
+      for (const data of receiptDataArray) await writer.write(data);
+      await writer.write(ESC_FEED_PAPER);
+      writer.releaseLock();
+      await port.close();
+      return true;
+    } catch (err) {
+      console.error(`Serial Print Error on ${targetRole}:`, err);
+      try { if (port) await port.close(); } catch (_) { /* ignore */ }
+      Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} Serial Print Failed!`, text: 'COM port printer cable connect කර on කර ඇතිදැයි බලන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
+      return false;
+    }
+  };
+
+  // 🎯 ROUTER: mapping[role] = deviceId → pairedDevices list ෙකන් type find කරලා නිවැරදි function ෙ යවනවා
+  const printViaBluetooth = async (targetRole, receiptDataArray) => {
+    const mappingSaved = localStorage.getItem('pos_printer_mapping');
+    const devicesSaved = localStorage.getItem('pos_paired_bluetooth_devices');
+    if (!mappingSaved) return false;
+
+    const mapping = JSON.parse(mappingSaved);
+    const deviceId = mapping[targetRole];
+
+    if (!deviceId) {
+      console.log(`⚠️ Printer not assigned for: ${targetRole.toUpperCase()}`);
+      return false;
+    }
+
+    const allDevices = devicesSaved ? JSON.parse(devicesSaved) : [];
+    const device = allDevices.find(d => d.id === deviceId);
+
+    if (!device) {
+      console.log(`⚠️ Device not found in paired list: ${deviceId}`);
+      return false;
+    }
+
+    if (device.type === 'USB') return await printViaWebUSB(device, targetRole, receiptDataArray);
+    if (device.type === 'SERIAL') return await printViaSerialPort(device, targetRole, receiptDataArray);
+    return await printViaBluetoothDevice(device.name, targetRole, receiptDataArray); // BLUETOOTH
   };
 
   // ==========================================
@@ -189,20 +328,20 @@ export default function BillingScreen({ isTakeaway = false }) {
     });
 
     setTables(updatedTables);
-    Swal.fire({ icon: 'success', title: `${newTableName} සක්‍රීය කරන ලදී!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 2000, timerProgressBar: true });
+    Swal.fire({ icon: 'success', title: `${newTableName} Created!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 2000, timerProgressBar: true });
   };
 
   // ✅ NEW METHOD: අවුල් වුණු මේස ආයෙත් 1 සිට 4 වෙනකන් Default Reset කරගැනීමට
   const handleResetTables = () => {
     Swal.fire({
-      title: 'Tables Reset කරන්නද?',
-      text: "දැනට තියෙන සියලුම මේස අංක මකා දමා Table 1 සිට 4 දක්වා සකසනු ඇත.",
+      title: 'Reset Tables?',
+      text: "deleted tables will be lost and cart will be cleared.",
       icon: 'warning',
       showCancelButton: true,
       confirmButtonColor: '#4f46e5',
       cancelButtonColor: '#d33',
-      confirmButtonText: 'ඔව්, Reset කරන්න',
-      cancelButtonText: 'එපා'
+      confirmButtonText: 'Yes, Reset',
+      cancelButtonText: 'No, Cancel'
     }).then((result) => {
       if (result.isConfirmed) {
         setTables(['Table 1', 'Table 2', 'Table 3', 'Table 4']);
@@ -210,7 +349,7 @@ export default function BillingScreen({ isTakeaway = false }) {
         setCart([]);
         setIsSavedForTable(false);
         setIsPreBillPrinted(false);
-        Swal.fire({ icon: 'success', title: 'Tables සකස් කිරීම සාර්ථකයි!', toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
+        Swal.fire({ icon: 'success', title: 'Tables Reset Successfully!', toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
       }
     });
   };
@@ -237,7 +376,7 @@ export default function BillingScreen({ isTakeaway = false }) {
 
   const addToCart = (item) => {
     if (!isTakeaway && !selectedTable) {
-      Swal.fire({ icon: 'warning', title: 'Table එකක් තෝරන්න!', text: 'කරුණාකර ප්‍රථමයෙන් මේසයක් තෝරා ඉන්පසු ආහාර ඇතුළත් කරන්න.', confirmButtonColor: '#4f46e5' });
+      Swal.fire({ icon: 'warning', title: 'Select a Table!', text: 'Please select a table first, then add items to the cart.', confirmButtonColor: '#4f46e5' });
       return;
     }
     const unsavedIndex = cart.findIndex(c => c.id === item.id && !c.isSaved);
@@ -250,7 +389,7 @@ export default function BillingScreen({ isTakeaway = false }) {
   const updateQuantity = (cartIndex, amount) => {
     const targetItem = cart[cartIndex];
     if (targetItem.isSaved) {
-      Swal.fire({ icon: 'error', title: '🔒 ක්‍රියාව අවහිර කර ඇත!', text: 'දැනටමත් මුළුතැන්ගෙයට යැවූ (Saved) ආහාර වෙනස් කළ නොහැක.', confirmButtonColor: '#ef4444' });
+      Swal.fire({ icon: 'error', title: '🔒 Action Restricted!', text: 'You cannot modify items that are already saved.', confirmButtonColor: '#ef4444' });
       return;
     }
     let newCart = [...cart];
@@ -270,7 +409,7 @@ export default function BillingScreen({ isTakeaway = false }) {
     const passwordInput = adminPassword.trim();
 
     if (!usernameInput || !passwordInput) {
-      Swal.fire({ icon: 'error', title: 'Username සහ Password දෙකම ඇතුළත් කරන්න!', confirmButtonColor: '#ef4444' });
+      Swal.fire({ icon: 'error', title: 'Enter Username and Password!', confirmButtonColor: '#ef4444' });
       return;
     }
 
@@ -285,11 +424,11 @@ export default function BillingScreen({ isTakeaway = false }) {
         else if (pendingAction === 'RE_PRINT') executePrintPreBill();
         else if (pendingAction === 'CLEAR_BILL') executeClearTableBill();
       } else {
-        Swal.fire({ icon: 'error', title: 'මුද්‍රාව වැරදියි!', text: 'Username, Password වැරදියි, නැතහොත් ඔබට Admin අවසරය නැත.', confirmButtonColor: '#ef4444' });
+        Swal.fire({ icon: 'error', title: 'Invalid Credentials!', text: 'Username or Password is incorrect, or you do not have Admin privileges.', confirmButtonColor: '#ef4444' });
       }
     } catch (err) {
       console.error('Admin verification error:', err);
-      Swal.fire({ icon: 'error', title: 'Database Error', text: 'Admin Verify වෙද්දී ගැටලුවක් මතු විය.', confirmButtonColor: '#ef4444' });
+      Swal.fire({ icon: 'error', title: 'Database Error', text: 'An error occurred while verifying admin credentials.', confirmButtonColor: '#ef4444' });
     } finally {
       setAdminCheckLoading(false);
     }
@@ -303,7 +442,7 @@ export default function BillingScreen({ isTakeaway = false }) {
 
   const executeSaveOrder = async () => {
     if (cart.length === 0) {
-      Swal.fire({ icon: 'info', title: 'Cart එක හිස්!', confirmButtonColor: '#4f46e5' });
+      Swal.fire({ icon: 'info', title: 'Cart is Empty!', confirmButtonColor: '#4f46e5' });
       return;
     }
     
@@ -356,14 +495,14 @@ export default function BillingScreen({ isTakeaway = false }) {
 
       Swal.fire({
         icon: 'success',
-        title: `${orderIdentifier} දත්ත සුරැකුණා!`,
+        title: `${orderIdentifier} Data Saved!`,
         html: `<div class="text-left text-xs bg-gray-50 p-3 rounded-xl mt-2 border"><ul class="list-disc pl-4 space-y-1">${printerReceipts || '<li>No new items to print.</li>'}</ul></div>`,
         confirmButtonColor: '#059669',
-        confirmButtonText: 'නියමයි'
+        confirmButtonText: 'Done'
       });
     } catch (err) {
       console.error(err);
-      Swal.fire({ icon: 'error', title: 'සුරැකීමට අපොහොසත් වුණා!', text: err.message });
+      Swal.fire({ icon: 'error', title: 'Failed to Save Data!', text: err.message });
     }
   };
 
@@ -384,7 +523,7 @@ export default function BillingScreen({ isTakeaway = false }) {
     const preBillReceipt = generateBillReceipt(orderIdentifier, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart);
     await printViaBluetooth('bill', preBillReceipt);
 
-    Swal.fire({ icon: 'info', title: '📄 Pre-Bill මුද්‍රණය වෙමින් පවතී...', html: `<b>${orderIdentifier}</b> Gross Total: <span class="text-indigo-600 font-bold">Rs.${netTotal.toFixed(2)}</span>`, showConfirmButton: false, timer: 2500, timerProgressBar: true });
+    Swal.fire({ icon: 'info', title: '📄 Pre-Bill Printing...', html: `<b>${orderIdentifier}</b> Gross Total: <span class="text-indigo-600 font-bold">Rs.${netTotal.toFixed(2)}</span>`, showConfirmButton: false, timer: 2500, timerProgressBar: true });
     setIsPreBillPrinted(true); 
   };
 
@@ -398,7 +537,7 @@ export default function BillingScreen({ isTakeaway = false }) {
       const finalReceipt = generateBillReceipt(orderIdentifier, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart);
       await printViaBluetooth('bill', finalReceipt);
 
-      Swal.fire({ icon: 'success', title: 'සෙට්ල්මන්ට් එක සාර්ථකයි! ✅', text: `🧾 Final Invoice Printed (${paymentMethod} Mode)`, confirmButtonColor: '#111827' });
+      Swal.fire({ icon: 'success', title: 'Settlement Successful! ✅', text: `🧾 Final Invoice Printed (${paymentMethod} Mode)`, confirmButtonColor: '#111827' });
       setIsSettleModalOpen(false); setSelectedTable(null); setCart([]); setIsSavedForTable(false); setIsPreBillPrinted(false);
     } catch (err) {
       console.error(err);
@@ -415,10 +554,10 @@ export default function BillingScreen({ isTakeaway = false }) {
       setCart([]);
       setIsSavedForTable(false);
       setIsPreBillPrinted(false);
-      Swal.fire({ icon: 'success', title: 'බිල සාර්ථකව ඉවත් කළා! 🗑️', text: 'මේසය දැන් හිස්ව පවතී.', toast: true, position: 'top-end', showConfirmButton: false, timer: 2500 });
+      Swal.fire({ icon: 'success', title: 'Bill Cleared Successfully! 🗑️', text: 'The table is now empty.', toast: true, position: 'top-end', showConfirmButton: false, timer: 2500 });
     } catch (err) {
       console.error(err);
-      Swal.fire({ icon: 'error', title: 'බිල ඉවත් කිරීමට නොහැකි වුණා!', text: err.message });
+      Swal.fire({ icon: 'error', title: 'Failed to Clear Bill!', text: err.message });
     }
   };
 

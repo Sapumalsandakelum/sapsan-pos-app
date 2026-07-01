@@ -59,7 +59,7 @@ export default function DashboardScreen() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-4 rounded-2xl border shrink-0 gap-2">
         <div>
           <h1 className="text-xl font-black tracking-tight text-gray-900">📈 Sales Dashboard & Analytics</h1>
-          <p className="text-xs text-gray-400 font-medium">දිනපතා විකුණුම් සහ ව්‍යාපාරික දත්ත විශ්ලේෂණය</p>
+          <p className="text-xs text-gray-400 font-medium">Daily sales and business analytics</p>
         </div>
         <div className="bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-xl text-indigo-700 font-bold text-xs">
           📅 Today: {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
@@ -148,7 +148,7 @@ export default function DashboardScreen() {
             </div>
           </div>
           <div className="text-[10px] text-gray-400 font-medium mt-4 pt-3 border-t text-center">
-            සියලුම දත්ත Real-time යාවත්කාලීන වේ.
+            All data is updated in real-time.
           </div>
         </div>
 
@@ -157,7 +157,7 @@ export default function DashboardScreen() {
           <h3 className="text-sm font-black text-gray-700 uppercase tracking-wider mb-3">🔥 Top 5 Best Selling Items (Today)</h3>
           <div className="divide-y text-xs">
             {topSellingItems.length === 0 ? (
-              <div className="py-8 text-center text-gray-400 font-bold">තවම අද දින විකුණුම් සිදු කර නොමැත.</div>
+              <div className="py-8 text-center text-gray-400 font-bold">No best-selling items for today yet.</div>
             ) : (
               topSellingItems.map((item, idx) => (
                 <div key={idx} className="py-2.5 flex justify-between items-center">

@@ -41,7 +41,7 @@ export default function App() {
       const password = (passwordRaw || '').trim();
 
       if (!username || !password) {
-        Swal.fire({ icon: 'error', title: 'Login Failed!', text: 'Username සහ Password දෙකම ඇතුළත් කරන්න. ❌', confirmButtonColor: '#ef4444' });
+        Swal.fire({ icon: 'error', title: 'Login Failed!', text: 'Input Username and Password. ❌', confirmButtonColor: '#ef4444' });
         return;
       }
 
@@ -56,12 +56,12 @@ export default function App() {
             setCurrentScreen('ADMIN');
             Swal.fire({
               icon: 'success',
-              title: 'ස්වාගතවාදෙයි Admin! (Default Account)',
-              text: 'කරුණාකර Profile Settings වෙත ගොස් ඔබගේ සැබෑ Admin ගිණුමක් සාදන්න.',
+              title: 'Welcome Admin! (Default Account)',
+              text: 'Please go to Profile Settings and create your own Admin account.',
               confirmButtonColor: '#4f46e5'
             });
           } else {
-            Swal.fire({ icon: 'error', title: 'Login Failed!', text: 'System එකේ admin ගිණුමක් තවම නැත. Default username: admin, password: 1234 උපයෝගී කරගන්න.', confirmButtonColor: '#ef4444' });
+            Swal.fire({ icon: 'error', title: 'Login Failed!', text: 'System has no admin account. Please use the default username: admin, password: 1234.', confirmButtonColor: '#ef4444' });
           }
           return;
         }
@@ -74,13 +74,13 @@ export default function App() {
 
         if (matchedAdmin && matchedAdmin.password === password) {
           setCurrentScreen('ADMIN');
-          Swal.fire({ icon: 'success', title: `ස්වාගතවාදෙයි ${matchedAdmin.username}!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
+          Swal.fire({ icon: 'success', title: `Welcome ${matchedAdmin.username}!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
         } else {
-          Swal.fire({ icon: 'error', title: 'Login Failed!', text: 'Username හෝ Password වැරදියි. ❌', confirmButtonColor: '#ef4444' });
+          Swal.fire({ icon: 'error', title: 'Login Failed!', text: 'Username or Password is incorrect. ❌', confirmButtonColor: '#ef4444' });
         }
       } catch (error) {
         console.error('Admin login error:', error);
-        Swal.fire({ icon: 'error', title: 'Database Error', text: 'Login වෙද්දී ගැටලුවක් මතු විය.', confirmButtonColor: '#ef4444' });
+        Swal.fire({ icon: 'error', title: 'Database Error', text: 'An error occurred while logging in.', confirmButtonColor: '#ef4444' });
       }
     }
   };

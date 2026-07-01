@@ -56,7 +56,7 @@ export default function App() {
             setCurrentScreen('ADMIN');
             Swal.fire({
               icon: 'success',
-              title: 'Welcome Admin! (Default Account)',
+              title: 'Welcome Admin!',
               text: 'Please go to Profile Settings and create your own Admin account.',
               confirmButtonColor: '#4f46e5'
             });

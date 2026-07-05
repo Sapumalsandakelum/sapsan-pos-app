@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import Swal from 'sweetalert2';
+import { printViaBluetooth, generateKitchenReceipt, generateBillReceipt } from './printUtils';
 
 export default function BillingScreen({ isTakeaway = false }) {
   // DB Live Queries
@@ -12,9 +13,9 @@ export default function BillingScreen({ isTakeaway = false }) {
 
   // UI States
   const [selectedCategory, setSelectedCategory] = useState('ALL');
-  const [selectedTable, setSelectedTable] = useState(null); 
-  const [cart, setCart] = useState([]); 
-  
+  const [selectedTable, setSelectedTable] = useState(null);
+  const [cart, setCart] = useState([]);
+
   // Dynamic Tables State
   const [tables, setTables] = useState(() => {
     const savedTables = localStorage.getItem('restaurant_tables');
@@ -31,10 +32,10 @@ export default function BillingScreen({ isTakeaway = false }) {
 
   // Admin Password Security States
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
-  const [adminUsername, setAdminUsername] = useState(''); // 👈 Admin Username field අලුතින් එකතු කළා
+  const [adminUsername, setAdminUsername] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
-  const [adminCheckLoading, setAdminCheckLoading] = useState(false); // 👈 db query වෙද්දී button එක disable කරන්න
-  const [pendingAction, setPendingAction] = useState(null); 
+  const [adminCheckLoading, setAdminCheckLoading] = useState(false);
+  const [pendingAction, setPendingAction] = useState(null);
 
   // Settlement Modals
   const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
@@ -45,282 +46,21 @@ export default function BillingScreen({ isTakeaway = false }) {
   const currentDisplayName = isTakeaway ? 'Takeaway Order' : (selectedTable || 'No Table Selected');
 
   // ==========================================
-  // ⚡ BLUETOOTH PRINTING CORE LOGIC
-  // ==========================================
-  const textToBytes = (text) => {
-    const encoder = new TextEncoder();
-    return encoder.encode(text + '\n');
-  };
-
-  const ESC_ALIGN_CENTER = new Uint8Array([0x1B, 0x61, 0x01]);
-  const ESC_ALIGN_LEFT = new Uint8Array([0x1B, 0x61, 0x00]);
-  const ESC_ALIGN_RIGHT = new Uint8Array([0x1B, 0x61, 0x02]);
-  const ESC_FONT_BOLD = new Uint8Array([0x1B, 0x45, 0x01]);
-  const ESC_FONT_NORMAL = new Uint8Array([0x1B, 0x45, 0x00]);
-  const ESC_FEED_PAPER = new Uint8Array([0x1D, 0x56, 0x42, 0x03]);
-
-  // 🔵 Bluetooth (Wireless) Printer වෙත print කිරීම
-  const printViaBluetoothDevice = async (targetPrinterName, targetRole, receiptDataArray) => {
-    try {
-      const device = await navigator.bluetooth.requestDevice({
-        filters: [{ name: targetPrinterName }],
-        optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '00001101-0000-1000-8000-00805f9b34fb']
-      });
-
-      const server = await device.gatt.connect();
-      const services = await server.getPrimaryServices();
-      if (services.length === 0) throw new Error("No Bluetooth Services found");
-      
-      const characteristics = await services[0].getCharacteristics();
-      const writeCharacteristic = characteristics.find(c => c.properties.write || c.properties.writeWithoutResponse);
-
-      if (!writeCharacteristic) throw new Error("No Write Characteristic found");
-
-      for (const data of receiptDataArray) {
-        await writeCharacteristic.writeValue(data);
-      }
-      
-      await writeCharacteristic.writeValue(ESC_FEED_PAPER);
-      await server.disconnect();
-      return true;
-    } catch (err) {
-      console.error(`Bluetooth Printing Error on ${targetRole}: `, err);
-      Swal.fire({
-        icon: 'error',
-        title: `${targetRole.toUpperCase()} Print Failed!`,
-        text: 'Check the Bluetooth printer connection and ensure it is powered on.',
-        toast: true,
-        position: 'top-end',
-        showConfirmButton: false,
-        timer: 3000
-      });
-      return false;
-    }
-  };
-
-  // 🔌 Cable (USB) Printer වෙත print කිරීම - PC/Laptop එකක Web Serial API එක හරහා
-  const printViaUsbCableDevice = async (vendorId, productId, targetRole, receiptDataArray) => {
-    if (!navigator.serial) {
-      Swal.fire({
-        icon: 'error',
-        title: `${targetRole.toUpperCase()} Cable Print Failed!`,
-        text: 'This Browser does not support USB/Cable Printing. Use Chrome or Edge (Desktop).',
-        toast: true,
-        position: 'top-end',
-        showConfirmButton: false,
-        timer: 3500
-      });
-      return false;
-    }
-
-    let matchedPort = null;
-    try {
-      const ports = await navigator.serial.getPorts();
-      matchedPort = ports.find(p => {
-        const info = p.getInfo ? p.getInfo() : {};
-        return String(info.usbVendorId) === String(vendorId) && String(info.usbProductId) === String(productId);
-      });
-
-      if (!matchedPort) {
-        Swal.fire({
-          icon: 'error',
-          title: `${targetRole.toUpperCase()} Cable Printer Not Found!`,
-          text: 'Admin Panel → Printer Settings go and reconnect the USB printer.',
-          toast: true,
-          position: 'top-end',
-          showConfirmButton: false,
-          timer: 3500
-        });
-        return false;
-      }
-
-      await matchedPort.open({ baudRate: 9600 });
-      const writer = matchedPort.writable.getWriter();
-
-      for (const data of receiptDataArray) {
-        await writer.write(data);
-      }
-      await writer.write(ESC_FEED_PAPER);
-
-      writer.releaseLock();
-      await matchedPort.close();
-      return true;
-    } catch (err) {
-      console.error(`USB Cable Printing Error on ${targetRole}: `, err);
-      try { if (matchedPort && matchedPort.readable) await matchedPort.close(); } catch (closeErr) { /* ignore */ }
-      Swal.fire({
-        icon: 'error',
-        title: `${targetRole.toUpperCase()} Cable Print Failed!`,
-        text: 'Check the USB printer connection and ensure it is powered on.',
-        toast: true,
-        position: 'top-end',
-        showConfirmButton: false,
-        timer: 3500
-      });
-      return false;
-    }
-  };
-
-  // 🟡 WebUSB Printer (cable, USB port) — navigator.usb API
-  const printViaWebUSB = async (deviceInfo, targetRole, receiptDataArray) => {
-    if (!navigator.usb) {
-      Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} USB Print Failed!`, text: 'WebUSB Supported නැත. Chrome / Edge (Desktop) use කරන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
-      return false;
-    }
-    let usbDevice = null;
-    try {
-      const granted = await navigator.usb.getDevices();
-      usbDevice = granted.find(d => d.vendorId === deviceInfo.vendorId && d.productId === deviceInfo.productId);
-      if (!usbDevice) {
-        Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} USB Printer Not Found!`, text: 'Admin Panel → Printer Settings වෙත ගොස් USB printer නැවත Connect කරන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
-        return false;
-      }
-      await usbDevice.open();
-      if (usbDevice.configuration === null) await usbDevice.selectConfiguration(1);
-      await usbDevice.claimInterface(0);
-
-      for (const data of receiptDataArray) await usbDevice.transferOut(1, data);
-      await usbDevice.transferOut(1, ESC_FEED_PAPER);
-      await usbDevice.close();
-      return true;
-    } catch (err) {
-      console.error(`WebUSB Print Error on ${targetRole}:`, err);
-      try { if (usbDevice) await usbDevice.close(); } catch (_) { /* ignore */ }
-      Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} USB Print Failed!`, text: 'Printer cable connect කර on කර ඇතිදැයි බලන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
-      return false;
-    }
-  };
-
-  // 🟢 Serial/COM Port Printer — navigator.serial API
-  const printViaSerialPort = async (deviceInfo, targetRole, receiptDataArray) => {
-    if (!navigator.serial) {
-      Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} Serial Print Failed!`, text: 'Web Serial Supported නැත. Chrome / Edge v89+ use කරන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
-      return false;
-    }
-    let port = null;
-    try {
-      const ports = await navigator.serial.getPorts();
-      port = ports[0]; // Admin panel ekenma authorize karapu port eka
-      if (!port) {
-        Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} COM Printer Not Found!`, text: 'Admin Panel → Printer Settings වෙත ගොස් Serial printer නැවත Connect කරන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
-        return false;
-      }
-      await port.open({ baudRate: 9600 });
-      const writer = port.writable.getWriter();
-      for (const data of receiptDataArray) await writer.write(data);
-      await writer.write(ESC_FEED_PAPER);
-      writer.releaseLock();
-      await port.close();
-      return true;
-    } catch (err) {
-      console.error(`Serial Print Error on ${targetRole}:`, err);
-      try { if (port) await port.close(); } catch (_) { /* ignore */ }
-      Swal.fire({ icon: 'error', title: `${targetRole.toUpperCase()} Serial Print Failed!`, text: 'COM port printer cable connect කර on කර ඇතිදැයි බලන්න.', toast: true, position: 'top-end', showConfirmButton: false, timer: 3500 });
-      return false;
-    }
-  };
-
-  // 🎯 ROUTER: mapping[role] = deviceId → pairedDevices list ෙකන් type find කරලා නිවැරදි function ෙ යවනවා
-  const printViaBluetooth = async (targetRole, receiptDataArray) => {
-    const mappingSaved = localStorage.getItem('pos_printer_mapping');
-    const devicesSaved = localStorage.getItem('pos_paired_bluetooth_devices');
-    if (!mappingSaved) return false;
-
-    const mapping = JSON.parse(mappingSaved);
-    const deviceId = mapping[targetRole];
-
-    if (!deviceId) {
-      console.log(`⚠️ Printer not assigned for: ${targetRole.toUpperCase()}`);
-      return false;
-    }
-
-    const allDevices = devicesSaved ? JSON.parse(devicesSaved) : [];
-    const device = allDevices.find(d => d.id === deviceId);
-
-    if (!device) {
-      console.log(`⚠️ Device not found in paired list: ${deviceId}`);
-      return false;
-    }
-
-    if (device.type === 'USB') return await printViaWebUSB(device, targetRole, receiptDataArray);
-    if (device.type === 'SERIAL') return await printViaSerialPort(device, targetRole, receiptDataArray);
-    return await printViaBluetoothDevice(device.name, targetRole, receiptDataArray); // BLUETOOTH
-  };
-
-  // ==========================================
-  // 🔥 RECEIPT FORMAT GENERATORS
-  // ==========================================
-  const generateKitchenReceipt = (tableName, typeLabel, itemsList) => {
-    const data = [];
-    data.push(ESC_ALIGN_CENTER);
-    data.push(ESC_FONT_BOLD);
-    data.push(textToBytes(`*** ${typeLabel} ***`));
-    data.push(ESC_FONT_NORMAL);
-    data.push(textToBytes(`${isTakeaway ? 'Type' : 'Table'}: ${tableName}`));
-    data.push(textToBytes(`Date: ${new Date().toLocaleTimeString()}`));
-    data.push(textToBytes('--------------------------------'));
-    data.push(ESC_ALIGN_LEFT);
-    
-    itemsList.forEach(item => {
-      data.push(textToBytes(`${item.quantity} x ${item.name}`));
-    });
-    
-    data.push(textToBytes('--------------------------------'));
-    return data;
-  };
-
-  const generateBillReceipt = (tableName, billTitle, sub, sc, disc, net, itemsList) => {
-    const data = [];
-    data.push(ESC_ALIGN_CENTER);
-    data.push(ESC_FONT_BOLD);
-    data.push(textToBytes('SAPSAN RESTAURANT'));
-    data.push(ESC_FONT_NORMAL);
-    data.push(textToBytes('Matara, Sri Lanka'));
-    data.push(textToBytes(`--- ${billTitle} ---`));
-    data.push(textToBytes(`${isTakeaway ? 'Type' : 'Table'}: ${tableName} | Date: ${new Date().toLocaleDateString()}`));
-    data.push(textToBytes('--------------------------------'));
-    data.push(ESC_ALIGN_LEFT);
-
-    itemsList.forEach(item => {
-      const lineTotal = (item.sellingPrice * item.quantity).toFixed(0);
-      data.push(textToBytes(`${item.name}`));
-      data.push(ESC_ALIGN_RIGHT);
-      data.push(textToBytes(`${item.quantity} x ${item.sellingPrice} = Rs.${lineTotal}`));
-      data.push(ESC_ALIGN_LEFT);
-    });
-
-    data.push(textToBytes('--------------------------------'));
-    data.push(ESC_ALIGN_RIGHT);
-    data.push(textToBytes(`Sub Total: Rs.${sub.toFixed(2)}`));
-    data.push(textToBytes(`Service Charge: Rs.${sc.toFixed(2)}`));
-    if (disc > 0) data.push(textToBytes(`Discount: -Rs.${disc.toFixed(2)}`));
-    data.push(ESC_FONT_BOLD);
-    data.push(textToBytes(`NET TOTAL: Rs.${net.toFixed(2)}`));
-    data.push(ESC_FONT_NORMAL);
-    data.push(ESC_ALIGN_CENTER);
-    data.push(textToBytes('Thank You! Come Again.'));
-    return data;
-  };
-
-  // ==========================================
   // HANDLERS & OPERATIONS
   // ==========================================
-  
-  // ✅ FIX/UPDATE: Table 1 ඉඳන් පිළිවෙළට අඩුවෙන් තියෙන අංකය හොයලා Add කරන ක්‍රමය
+
   const addNewTable = () => {
     const currentNumbers = tables
       .map(t => parseInt(t.replace('Table ', '')))
       .filter(num => !isNaN(num));
 
-    // 1 සිට ඉහළට පරීක්ෂා කර පද්ධතියේ දැනට නැති අඩුම අංකය සොයා ගැනීම
     let nextNumber = 1;
     while (currentNumbers.includes(nextNumber)) {
       nextNumber++;
     }
 
     const newTableName = `Table ${nextNumber}`;
-    
-    // මේස අංක පිළිවෙළට සකස් කර ලිස්ට් එකට එකතු කිරීම
+
     const updatedTables = [...tables, newTableName].sort((a, b) => {
       const numA = parseInt(a.replace('Table ', '')) || 0;
       const numB = parseInt(b.replace('Table ', '')) || 0;
@@ -331,7 +71,6 @@ export default function BillingScreen({ isTakeaway = false }) {
     Swal.fire({ icon: 'success', title: `${newTableName} Created!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 2000, timerProgressBar: true });
   };
 
-  // ✅ NEW METHOD: අවුල් වුණු මේස ආයෙත් 1 සිට 4 වෙනකන් Default Reset කරගැනීමට
   const handleResetTables = () => {
     Swal.fire({
       title: 'Reset Tables?',
@@ -383,7 +122,7 @@ export default function BillingScreen({ isTakeaway = false }) {
     let newCart = [...cart];
     if (unsavedIndex > -1) newCart[unsavedIndex].quantity += 1;
     else newCart.push({ ...item, quantity: 1, isSaved: false });
-    setCart(newCart); setIsSavedForTable(false); setIsPreBillPrinted(false); 
+    setCart(newCart); setIsSavedForTable(false); setIsPreBillPrinted(false);
   };
 
   const updateQuantity = (cartIndex, amount) => {
@@ -396,14 +135,13 @@ export default function BillingScreen({ isTakeaway = false }) {
     const newQty = targetItem.quantity + amount;
     if (newQty > 0) newCart[cartIndex].quantity = newQty;
     else newCart = newCart.filter((_, idx) => idx !== cartIndex);
-    setCart(newCart); setIsSavedForTable(false); setIsPreBillPrinted(false); 
+    setCart(newCart); setIsSavedForTable(false); setIsPreBillPrinted(false);
   };
 
   const triggerAdminCheck = (actionType) => {
     setPendingAction(actionType); setIsAdminModalOpen(true);
   };
 
-  // ✅ FIXED: දැන් db.admins table එක against username + password දෙකම check කරනවා (hardcoded '1234' ඉවත් කළා)
   const handleAdminVerify = async () => {
     const usernameInput = adminUsername.trim();
     const passwordInput = adminPassword.trim();
@@ -445,11 +183,11 @@ export default function BillingScreen({ isTakeaway = false }) {
       Swal.fire({ icon: 'info', title: 'Cart is Empty!', confirmButtonColor: '#4f46e5' });
       return;
     }
-    
+
     const unsavedItems = cart.filter(i => !i.isSaved);
     const kotItems = [];
     const botItems = [];
-    
+
     unsavedItems.forEach(item => {
       const cat = categories.find(c => c.id === item.categoryId);
       if (cat && cat.printerType === 'BOT') botItems.push(item);
@@ -477,15 +215,15 @@ export default function BillingScreen({ isTakeaway = false }) {
       }
 
       setCart(finalItemsForDb.map(i => ({ ...i, isSaved: true })));
-      setIsSavedForTable(true); 
+      setIsSavedForTable(true);
       setIsPreBillPrinted(currentPreBillState);
 
       if (kotItems.length > 0) {
-        const kotReceipt = generateKitchenReceipt(orderIdentifier, 'KOT (KITCHEN)', kotItems);
+        const kotReceipt = generateKitchenReceipt(isTakeaway, orderIdentifier, 'KOT (KITCHEN)', kotItems);
         await printViaBluetooth('kot', kotReceipt);
       }
       if (botItems.length > 0) {
-        const botReceipt = generateKitchenReceipt(orderIdentifier, 'BOT (BAR)', botItems);
+        const botReceipt = generateKitchenReceipt(isTakeaway, orderIdentifier, 'BOT (BAR)', botItems);
         await printViaBluetooth('bot', botReceipt);
       }
 
@@ -513,18 +251,24 @@ export default function BillingScreen({ isTakeaway = false }) {
 
   const executePrintPreBill = async () => {
     if (cart.length === 0) return;
-    
+
     const orderIdentifier = isTakeaway ? 'Takeaway' : selectedTable;
     const existingOrder = activeOrders.find(o => o.tableNumber === orderIdentifier);
     if (existingOrder) {
       await db.orders.update(existingOrder.id, { isPreBillPrinted: true });
     }
 
-    const preBillReceipt = generateBillReceipt(orderIdentifier, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart);
-    await printViaBluetooth('bill', preBillReceipt);
+    Swal.fire({ title: 'Printing Pre-Bill...', didOpen: () => Swal.showLoading(), allowOutsideClick: false, showConfirmButton: false });
+    const preBillReceipt = await generateBillReceipt(isTakeaway, orderIdentifier, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart);
+    const printed = await printViaBluetooth('bill', preBillReceipt);
+    Swal.close();
 
-    Swal.fire({ icon: 'info', title: '📄 Pre-Bill Printing...', html: `<b>${orderIdentifier}</b> Gross Total: <span class="text-indigo-600 font-bold">Rs.${netTotal.toFixed(2)}</span>`, showConfirmButton: false, timer: 2500, timerProgressBar: true });
-    setIsPreBillPrinted(true); 
+    if (printed) {
+      Swal.fire({ icon: 'info', title: '📄 Pre-Bill Printed', html: `<b>${orderIdentifier}</b> Gross Total: <span class="text-indigo-600 font-bold">Rs.${netTotal.toFixed(2)}</span>`, showConfirmButton: false, timer: 2500, timerProgressBar: true });
+    } else {
+      Swal.fire({ icon: 'warning', title: 'No Bill Printer Assigned!', text: 'Go to Admin Panel → Printer Settings → Assign Printer Roles and set a printer for BILL.', confirmButtonColor: '#4f46e5' });
+    }
+    setIsPreBillPrinted(true);
   };
 
   const handleFinalSettle = async () => {
@@ -534,13 +278,23 @@ export default function BillingScreen({ isTakeaway = false }) {
 
     try {
       await db.orders.update(existingOrder.id, { discountAmount, netTotal: finalTotal, paymentMethod, status: 'SETTLED', settledDate: new Date() });
-      const finalReceipt = generateBillReceipt(orderIdentifier, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart);
-      await printViaBluetooth('bill', finalReceipt);
 
-      Swal.fire({ icon: 'success', title: 'Settlement Successful! ✅', text: `🧾 Final Invoice Printed (${paymentMethod} Mode)`, confirmButtonColor: '#111827' });
+      Swal.fire({ title: 'Printing Final Invoice...', didOpen: () => Swal.showLoading(), allowOutsideClick: false, showConfirmButton: false });
+      const finalReceipt = await generateBillReceipt(isTakeaway, orderIdentifier, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart);
+      const printed = await printViaBluetooth('bill', finalReceipt);
+      Swal.close();
+
+      Swal.fire({
+        icon: 'success',
+        title: 'Settlement Successful! ✅',
+        text: printed ? `🧾 Final Invoice Printed (${paymentMethod} Mode)` : `Settled (${paymentMethod} Mode) — no bill printer assigned, so nothing was printed.`,
+        confirmButtonColor: '#111827'
+      });
       setIsSettleModalOpen(false); setSelectedTable(null); setCart([]); setIsSavedForTable(false); setIsPreBillPrinted(false);
     } catch (err) {
       console.error(err);
+      Swal.close();
+      Swal.fire({ icon: 'error', title: 'Settlement Failed', text: err.message });
     }
   };
 
@@ -563,7 +317,7 @@ export default function BillingScreen({ isTakeaway = false }) {
 
   // Calculations Logic
   const calculateTotals = () => {
-    let subTotal = 0; 
+    let subTotal = 0;
     let totalServiceCharge = 0;
     cart.forEach(item => {
       const itemTotal = item.sellingPrice * item.quantity;
@@ -588,7 +342,7 @@ export default function BillingScreen({ isTakeaway = false }) {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 h-[calc(100vh-64px)] w-full bg-gray-100 overflow-hidden p-2 gap-2 text-gray-800 box-border">
-      
+
       {/* LEFT PANEL */}
       <div className="lg:col-span-5 bg-white rounded-2xl p-3 flex flex-col h-full overflow-hidden border">
         <div className="flex space-x-2 overflow-x-auto pb-2 scrollbar-none shrink-0">
@@ -609,11 +363,9 @@ export default function BillingScreen({ isTakeaway = false }) {
 
       {/* MIDDLE PANEL */}
       <div className={`lg:col-span-3 bg-white rounded-2xl p-3 flex flex-col h-full overflow-hidden border transition-all ${isTakeaway ? 'opacity-40 pointer-events-none select-none bg-gray-50' : ''}`}>
-        
-        {/* ✅ UPDATED HEADER AREA WITH RESET BUTTON */}
+
         <div className="flex justify-between items-center mb-2 shrink-0">
           <h2 className="text-sm font-black text-gray-500 uppercase tracking-wider">📋 Restaurant Tables</h2>
-       
         </div>
 
         <div className="grid grid-cols-2 gap-2 overflow-y-auto flex-1 content-start pr-1">
@@ -671,7 +423,7 @@ export default function BillingScreen({ isTakeaway = false }) {
             <span>+Rs.{totalServiceCharge.toFixed(2)}</span>
           </div>
           <div className="flex justify-between text-base font-black text-indigo-700 border-t pt-1"><span>Net Total</span><span>Rs.{netTotal.toFixed(2)}</span></div>
-          
+
           {(isTakeaway ? cart.length > 0 : selectedTable) && (
             <div className="space-y-1.5 pt-1">
               <button onClick={handleSaveOrderClick} className={`w-full text-white py-3 rounded-xl font-black text-sm transition shadow-sm ${isSavedForTable && cart.filter(i => !i.isSaved).length === 0 ? 'bg-gray-400 hover:bg-gray-500' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
@@ -685,8 +437,8 @@ export default function BillingScreen({ isTakeaway = false }) {
               </div>
 
               {selectedTable && cart.length > 0 && (
-                <button 
-                  onClick={() => triggerAdminCheck('CLEAR_BILL')} 
+                <button
+                  onClick={() => triggerAdminCheck('CLEAR_BILL')}
                   className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-xl font-black transition text-xs shadow-sm mt-1"
                 >
                   🗑️ Clear Table Bill (Admin Required)

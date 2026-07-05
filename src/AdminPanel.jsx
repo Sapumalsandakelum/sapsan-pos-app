@@ -3,18 +3,25 @@ import React, { useState, useEffect } from 'react';
 import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import Swal from 'sweetalert2';
+import {
+  getBillDesignSettings,
+  saveBillDesignSettings,
+  PAPER_WIDTH_CONFIG,
+  generateBillReceipt,
+  printViaBluetooth
+} from './printUtils';
 
 export default function AdminPanel({ onBackToBilling }) {
   // DB Live Queries
   const categories = useLiveQuery(() => db.categories.toArray()) || [];
   const items = useLiveQuery(() => db.items.toArray()) || [];
   const settledOrders = useLiveQuery(() => db.orders.where('status').equals('SETTLED').toArray()) || [];
-  
+
   // 👈 db.js එකේ ඇති db.admins ව්‍යුහය සෘජුවම ලබා ගැනීම
   const admins = useLiveQuery(() => db.admins.toArray()) || [];
 
   // Navigation state inside admin
-  const [activeSubTab, setActiveSubTab] = useState('CATEGORIES'); // CATEGORIES, ITEMS, REPORTS, PRINTERS, PROFILE
+  const [activeSubTab, setActiveSubTab] = useState('CATEGORIES'); // CATEGORIES, ITEMS, REPORTS, PRINTERS, BILL_DESIGN, PROFILE
 
   // ==========================================
   // 📊 REPORTS STATES
@@ -75,21 +82,20 @@ export default function AdminPanel({ onBackToBilling }) {
     totalNetSales += order.netTotal || 0;
     totalDiscounts += order.discountAmount || 0;
     totalServiceCharges += order.totalServiceCharge || 0;
-    
+
     if (paymentMethodMap[order.paymentMethod] !== undefined) {
       paymentMethodMap[order.paymentMethod] += order.netTotal || 0;
     }
 
     const customerKey = order.tableNumber || 'Walk-in';
     customerSalesMap[customerKey] = (customerSalesMap[customerKey] || 0) + order.netTotal;
-    
+
     const cashierKey = order.cashierName || 'Admin Cashier';
     cashierSalesMap[cashierKey] = (cashierSalesMap[cashierKey] || 0) + order.netTotal;
 
     order.items.forEach(item => {
       const lineTotal = item.sellingPrice * item.quantity;
 
-      // 👈 Actual cost price එක items table එකෙන් සොයාගෙන profit calculate කිරීම
       const itemDbInfoForCost = items.find(i => i.name === item.name);
       const unitCost = itemDbInfoForCost && itemDbInfoForCost.costPrice ? itemDbInfoForCost.costPrice : (item.sellingPrice * 0.6);
       totalCostOfSales += unitCost * item.quantity;
@@ -113,7 +119,6 @@ export default function AdminPanel({ onBackToBilling }) {
   const profitMarginPercent = totalNetSales > 0 ? (totalCalculatedProfit / totalNetSales) * 100 : 0;
   const bestSellersList = Object.entries(productSalesMap).map(([name, data]) => ({ name, ...data })).sort((a, b) => b.qty - a.qty);
 
-  // 👈 REPORTS TAB එක සඳහා අමතර derived lists - professional report views සඳහා
   const totalOrdersCount = filteredOrders.length;
   const avgOrderValue = totalOrdersCount > 0 ? totalNetSales / totalOrdersCount : 0;
 
@@ -166,7 +171,6 @@ export default function AdminPanel({ onBackToBilling }) {
     localStorage.setItem('pos_printer_mapping', JSON.stringify(printerMapping));
   }, [printerMapping]);
 
-  // 🔵 Device eka list eke add karanna helper
   const addDevice = (newDevice) => {
     setPairedDevices(prev => {
       if (prev.some(d => d.id === newDevice.id)) return prev;
@@ -174,7 +178,6 @@ export default function AdminPanel({ onBackToBilling }) {
     });
   };
 
-  // 🔵 දැනටමත් OS level eka paired/authorized BT devices load කිරීම (re-scan නොකර)
   const handleLoadPairedBluetooth = async () => {
     if (!navigator.bluetooth) {
       Swal.fire({ icon: 'error', title: 'Bluetooth Supported නැත!', text: 'Chrome හෝ Edge browser use කරන්න.' });
@@ -195,7 +198,6 @@ export default function AdminPanel({ onBackToBilling }) {
     }
   };
 
-  // 🔵 නව Bluetooth printer scan කිරීම (OS pair dialog ගෙනෙනවා)
   const handleScanBluetooth = async () => {
     if (!navigator.bluetooth) {
       Swal.fire({ icon: 'error', title: 'Bluetooth not Supported!', text: 'Use Chrome or Edge browser' });
@@ -213,7 +215,6 @@ export default function AdminPanel({ onBackToBilling }) {
     } finally { setIsScanning(false); }
   };
 
-  // 🟡 USB Cable printer connect කිරීම (PC සඳහා)
   const handleConnectUSB = async () => {
     if (!navigator.usb) {
       Swal.fire({ icon: 'error', title: 'WebUSB not Supported!', text: 'Use Chrome or Edge browser (v61+)' });
@@ -230,7 +231,6 @@ export default function AdminPanel({ onBackToBilling }) {
     }
   };
 
-  // 🟢 COM Port / Serial printer connect කිරීම (PC cable printers සඳහා)
   const handleConnectSerial = async () => {
     if (!navigator.serial) {
       Swal.fire({ icon: 'error', title: 'Web Serial not Supported!', text: 'Use Chrome or Edge browser (v89+)' });
@@ -248,10 +248,8 @@ export default function AdminPanel({ onBackToBilling }) {
     }
   };
 
-  // 🔴 Device eka list එකෙන් ඉවත් කිරීම
   const handleRemoveDevice = (deviceId) => {
     setPairedDevices(prev => prev.filter(d => d.id !== deviceId));
-    // Mapping eke eka use kara tibba nam clear karanna
     setPrinterMapping(prev => {
       const updated = { ...prev };
       const removed = pairedDevices.find(d => d.id === deviceId);
@@ -269,7 +267,6 @@ export default function AdminPanel({ onBackToBilling }) {
     setPrinterMapping(prev => ({ ...prev, [role]: deviceId, [`${role}_name`]: device ? device.name : '' }));
   };
 
-  // Type badge color helper
   const typeColor = (type) => {
     if (type === 'BLUETOOTH') return 'bg-blue-100 text-blue-700';
     if (type === 'USB') return 'bg-yellow-100 text-yellow-700';
@@ -282,6 +279,62 @@ export default function AdminPanel({ onBackToBilling }) {
     if (type === 'SERIAL') return '🟢 COM';
     return type;
   };
+
+  // ==========================================
+  // 🧾 BILL DESIGN (Store info, Logo, Paper size, Layout)
+  // ==========================================
+  const [billDesignForm, setBillDesignForm] = useState(() => getBillDesignSettings());
+  const [isSendingTestPrint, setIsSendingTestPrint] = useState(false);
+
+  const handleBillDesignChange = (field, value) => {
+    setBillDesignForm(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleLogoUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      Swal.fire({ icon: 'error', title: 'Invalid File', text: 'Please choose an image file (PNG/JPG).' });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => handleBillDesignChange('logoBase64', reader.result);
+    reader.onerror = () => Swal.fire({ icon: 'error', title: 'Could not read image' });
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveLogo = () => handleBillDesignChange('logoBase64', '');
+
+  const handleSaveBillDesign = () => {
+    saveBillDesignSettings(billDesignForm);
+    Swal.fire({ icon: 'success', title: 'Bill Design Saved! 🧾', toast: true, position: 'top-end', showConfirmButton: false, timer: 1800 });
+  };
+
+  const handleTestPrint = async () => {
+    // Persist first so generateBillReceipt (which reads from storage) uses the current form
+    saveBillDesignSettings(billDesignForm);
+    setIsSendingTestPrint(true);
+    try {
+      const sampleItems = [
+        { name: 'Sample Item 1', sellingPrice: 250, quantity: 2 },
+        { name: 'Sample Item 2', sellingPrice: 450, quantity: 1 },
+      ];
+      const receipt = await generateBillReceipt(false, 'Test Table', 'TEST PRINT', 950, 95, 0, 1045, sampleItems);
+      const success = await printViaBluetooth('bill', receipt);
+      if (success) {
+        Swal.fire({ icon: 'success', title: 'Test Print Sent! ✅', toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
+      } else {
+        Swal.fire({ icon: 'warning', title: 'No Bill Printer Assigned', text: 'Go to Step ③ "Assign Printer Roles" above and set a printer for BILL first.' });
+      }
+    } catch (err) {
+      console.error(err);
+      Swal.fire({ icon: 'error', title: 'Test Print Failed', text: err.message });
+    } finally {
+      setIsSendingTestPrint(false);
+    }
+  };
+
+  const previewCharsWidth = billDesignForm.paperWidth === '58mm' ? '230px' : '300px';
 
   // ==========================================
   // 📂 CATEGORY OPERATIONALS
@@ -307,7 +360,7 @@ export default function AdminPanel({ onBackToBilling }) {
   // 🍔 FOOD ITEM OPERATIONALS
   // ==========================================
   const [itemName, setItemName] = useState('');
-  const [itemCostPrice, setItemCostPrice] = useState(''); // 👈 අලුතින් එකතු කළ Cost Price state
+  const [itemCostPrice, setItemCostPrice] = useState('');
   const [itemPrice, setItemPrice] = useState('');
   const [itemCategory, setItemCategory] = useState('');
   const [serviceCharge, setServiceCharge] = useState('10');
@@ -317,7 +370,7 @@ export default function AdminPanel({ onBackToBilling }) {
     e.preventDefault(); if (!itemName.trim() || !itemPrice || !itemCategory) return;
     const data = {
       name: itemName,
-      costPrice: parseFloat(itemCostPrice) || 0, // 👈 Cost Price db.items වෙත save කිරීම
+      costPrice: parseFloat(itemCostPrice) || 0,
       sellingPrice: parseFloat(itemPrice),
       categoryId: parseInt(itemCategory),
       serviceChargePercentage: parseFloat(serviceCharge) || 0
@@ -342,22 +395,20 @@ export default function AdminPanel({ onBackToBilling }) {
   const [editingAdminId, setEditingAdminId] = useState(null);
 
   const handleSaveAdmin = async (e) => {
-    e.preventDefault(); 
+    e.preventDefault();
     if (!adminUsername.trim() || !adminPassword.trim()) return;
-    
-    // db.js එකේ තියෙන ව්‍යුහයටම දත්ත සකස් කිරීම
-    const data = { 
-      username: adminUsername.trim(), 
-      password: adminPassword.trim(), // Login Form එකෙන් චෙක් කරන Field එක
-      role: adminRole 
+
+    const data = {
+      username: adminUsername.trim(),
+      password: adminPassword.trim(),
+      role: adminRole
     };
-    
+
     try {
       if (editingAdminId) {
         await db.admins.update(editingAdminId, data);
         Swal.fire({ icon: 'success', title: 'Profile Updated! ✅', toast: true, position: 'top-end', showConfirmButton: false, timer: 1500 });
       } else {
-        // Duplicate එකක්දැයි පරීක්ෂා කිරීම
         const existing = await db.admins.where('username').equalsIgnoreCase(data.username).first();
         if (existing) {
           Swal.fire({ icon: 'error', title: 'Username Already Exists!', text: 'Use a different username.' });
@@ -366,11 +417,10 @@ export default function AdminPanel({ onBackToBilling }) {
         await db.admins.add(data);
         Swal.fire({ icon: 'success', title: 'Account Created! 🎉', toast: true, position: 'top-end', showConfirmButton: false, timer: 1500 });
       }
-      
-      // Form එක Reset කිරීම
-      setAdminUsername(''); 
-      setAdminPassword(''); 
-      setAdminRole('ADMIN'); 
+
+      setAdminUsername('');
+      setAdminPassword('');
+      setAdminRole('ADMIN');
       setEditingAdminId(null);
     } catch (error) {
       console.error("Error saving admin:", error);
@@ -379,15 +429,15 @@ export default function AdminPanel({ onBackToBilling }) {
   };
 
   const handleDeleteAdmin = async (id) => {
-    const result = await Swal.fire({ 
-      title: 'Are you sure?', 
-      text: "Delete this admin account?", 
-      icon: 'warning', 
-      showCancelButton: true, 
-      confirmButtonColor: '#ef4444', 
-      confirmButtonText: 'Yes, Delete' 
+    const result = await Swal.fire({
+      title: 'Are you sure?',
+      text: "Delete this admin account?",
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#ef4444',
+      confirmButtonText: 'Yes, Delete'
     });
-    
+
     if (result.isConfirmed) {
       await db.admins.delete(id);
       Swal.fire({ icon: 'success', title: 'Deleted Successfully!', toast: true, position: 'top-end', showConfirmButton: false, timer: 1500 });
@@ -396,7 +446,7 @@ export default function AdminPanel({ onBackToBilling }) {
 
   return (
     <div className="flex flex-col h-[calc(100vh-57px)] w-full bg-gray-100 p-4 overflow-hidden text-gray-800">
-      
+
       {/* Top Header */}
       <div className="flex justify-between items-center bg-white p-4 rounded-2xl border shadow-sm mb-4 shrink-0">
         <div className="flex items-center space-x-3">
@@ -417,12 +467,13 @@ export default function AdminPanel({ onBackToBilling }) {
         <button onClick={() => setActiveSubTab('ITEMS')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'ITEMS' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🍔 Manage Food Items</button>
         <button onClick={() => setActiveSubTab('REPORTS')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'REPORTS' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>📊 Premium Reports</button>
         <button onClick={() => setActiveSubTab('PRINTERS')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'PRINTERS' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🖨️ Printer Settings</button>
+        <button onClick={() => setActiveSubTab('BILL_DESIGN')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'BILL_DESIGN' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🧾 Bill Design</button>
         <button onClick={() => setActiveSubTab('PROFILE')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'PROFILE' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🧑‍💼 Profile Settings</button>
       </div>
 
       {/* Main Container Workspaces */}
       <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-12 gap-4">
-        
+
         {/* CATEGORIES WORKSPACE */}
         {activeSubTab === 'CATEGORIES' && (
           <>
@@ -640,7 +691,6 @@ export default function AdminPanel({ onBackToBilling }) {
                   <div className="text-center text-gray-400 font-bold py-12">No data available for the selected filters.</div>
                 )}
 
-                {/* DAILY / MONTHLY — order-level summary */}
                 {filteredOrders.length > 0 && (reportType === 'DAILY' || reportType === 'MONTHLY') && (
                   <table className="w-full text-left">
                     <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">Date / Time</th><th className="p-2">Table</th><th className="p-2">Payment</th><th className="p-2 text-right">Net Total</th></tr></thead>
@@ -657,7 +707,6 @@ export default function AdminPanel({ onBackToBilling }) {
                   </table>
                 )}
 
-                {/* PRODUCT — sales by item */}
                 {filteredOrders.length > 0 && reportType === 'PRODUCT' && (
                   <table className="w-full text-left">
                     <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">Item</th><th className="p-2 text-right">Qty Sold</th><th className="p-2 text-right">Revenue</th><th className="p-2 text-right">% of Sales</th></tr></thead>
@@ -674,7 +723,6 @@ export default function AdminPanel({ onBackToBilling }) {
                   </table>
                 )}
 
-                {/* CATEGORY — sales by category */}
                 {filteredOrders.length > 0 && reportType === 'CATEGORY' && (
                   <table className="w-full text-left">
                     <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">Category</th><th className="p-2 text-right">Revenue</th><th className="p-2 text-right">% of Sales</th></tr></thead>
@@ -690,7 +738,6 @@ export default function AdminPanel({ onBackToBilling }) {
                   </table>
                 )}
 
-                {/* BEST SELLING — ranked products */}
                 {filteredOrders.length > 0 && reportType === 'BEST_SELLING' && (
                   <table className="w-full text-left">
                     <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">#</th><th className="p-2">Item</th><th className="p-2 text-right">Qty Sold</th><th className="p-2 text-right">Revenue</th></tr></thead>
@@ -707,7 +754,6 @@ export default function AdminPanel({ onBackToBilling }) {
                   </table>
                 )}
 
-                {/* CUSTOMER — sales by table */}
                 {filteredOrders.length > 0 && reportType === 'CUSTOMER' && (
                   <table className="w-full text-left">
                     <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">Table / Customer</th><th className="p-2 text-right">Orders</th><th className="p-2 text-right">Revenue</th></tr></thead>
@@ -723,7 +769,6 @@ export default function AdminPanel({ onBackToBilling }) {
                   </table>
                 )}
 
-                {/* CASHIER — sales by cashier */}
                 {filteredOrders.length > 0 && reportType === 'CASHIER' && (
                   <table className="w-full text-left">
                     <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">Cashier</th><th className="p-2 text-right">Orders</th><th className="p-2 text-right">Revenue</th></tr></thead>
@@ -739,7 +784,6 @@ export default function AdminPanel({ onBackToBilling }) {
                   </table>
                 )}
 
-                {/* PAYMENT METHOD — breakdown with bars */}
                 {filteredOrders.length > 0 && reportType === 'PAYMENT_METHOD' && (
                   <div className="space-y-3 p-2">
                     {paymentMethodList.map((p, i) => (
@@ -756,7 +800,6 @@ export default function AdminPanel({ onBackToBilling }) {
                   </div>
                 )}
 
-                {/* PROFIT & LOSS */}
                 {filteredOrders.length > 0 && reportType === 'PROFIT' && (
                   <div className="p-2 space-y-3">
                     <table className="w-full text-left">
@@ -779,7 +822,6 @@ export default function AdminPanel({ onBackToBilling }) {
                   </div>
                 )}
 
-                {/* DISCOUNT TRACKER */}
                 {reportType === 'DISCOUNT' && (
                   discountedOrdersList.length === 0 ? (
                     <div className="text-center text-gray-400 font-bold py-12">No discounted orders found in this range.</div>
@@ -800,7 +842,6 @@ export default function AdminPanel({ onBackToBilling }) {
                   )
                 )}
 
-                {/* DETAILED INVOICE LOG */}
                 {filteredOrders.length > 0 && reportType === 'INVOICE' && (
                   <div className="space-y-2">
                     {sortedInvoiceList.map((o, i) => (
@@ -838,7 +879,6 @@ export default function AdminPanel({ onBackToBilling }) {
                 <h3 className="text-xs font-black text-gray-400 uppercase mb-2">① Add Printers</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
 
-                  {/* Bluetooth section */}
                   <div className="border rounded-xl p-3 bg-blue-50 space-y-2">
                     <div className="flex items-center space-x-2">
                       <span className="text-lg">🔵</span>
@@ -862,7 +902,6 @@ export default function AdminPanel({ onBackToBilling }) {
                     </button>
                   </div>
 
-                  {/* USB Cable section */}
                   <div className="border rounded-xl p-3 bg-yellow-50 space-y-2">
                     <div className="flex items-center space-x-2">
                       <span className="text-lg">🟡</span>
@@ -882,7 +921,6 @@ export default function AdminPanel({ onBackToBilling }) {
                     </div>
                   </div>
 
-                  {/* Serial / COM Port section */}
                   <div className="border rounded-xl p-3 bg-green-50 space-y-2">
                     <div className="flex items-center space-x-2">
                       <span className="text-lg">🟢</span>
@@ -931,9 +969,9 @@ export default function AdminPanel({ onBackToBilling }) {
                 )}
               </div>
 
-              {/* ── STEP 3: Assign to Roles ── */}
+              {/* ── STEP 3: Assign to Roles (this IS your default printer per function) ── */}
               <div>
-                <h3 className="text-xs font-black text-gray-400 uppercase mb-2">③ Assign Printer Roles</h3>
+                <h3 className="text-xs font-black text-gray-400 uppercase mb-2">③ Assign Default Printers (per function)</h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   {[
                     { role: 'kot', label: '🔥 KOT', desc: 'Kitchen Order Ticket', color: 'border-orange-200 bg-orange-50' },
@@ -963,10 +1001,155 @@ export default function AdminPanel({ onBackToBilling }) {
                     </div>
                   ))}
                 </div>
+                <p className="text-[10px] text-gray-400 mt-2">
+                  💡 The printer assigned to <b>BILL</b> here is used automatically for Pre-Bill and Final Invoice prints — this is your "default" bill printer. If it stops printing after being unplugged/out of range, tap "Load Paired BT Devices" above to refresh it.
+                </p>
               </div>
 
             </div>
           </div>
+        )}
+
+        {/* 🧾 BILL DESIGN WORKSPACE */}
+        {activeSubTab === 'BILL_DESIGN' && (
+          <>
+            {/* Form Column */}
+            <div className="md:col-span-7 bg-white p-4 rounded-2xl border h-full overflow-y-auto space-y-5">
+              <div>
+                <h3 className="text-sm font-black text-gray-700 uppercase">🧾 Bill Layout & Store Info</h3>
+                <p className="text-[11px] text-gray-400">Customize what prints on the customer bill (Pre-Bill / Final Invoice).</p>
+              </div>
+
+              {/* Store Info */}
+              <div className="space-y-3">
+                <h4 className="text-[11px] font-black text-gray-400 uppercase">Store Details</h4>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Store Name</label>
+                  <input type="text" value={billDesignForm.storeName} onChange={(e) => handleBillDesignChange('storeName', e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs" placeholder="SAPSAN RESTAURANT" />
+                </div>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-gray-500">Store Address</label>
+                  <label className="flex items-center space-x-1 text-[10px] font-bold text-gray-400">
+                    <input type="checkbox" checked={billDesignForm.showAddress} onChange={(e) => handleBillDesignChange('showAddress', e.target.checked)} />
+                    <span>Show on bill</span>
+                  </label>
+                </div>
+                <input type="text" value={billDesignForm.storeAddress} onChange={(e) => handleBillDesignChange('storeAddress', e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs" placeholder="Matara, Sri Lanka" />
+
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-gray-500">Phone Number</label>
+                  <label className="flex items-center space-x-1 text-[10px] font-bold text-gray-400">
+                    <input type="checkbox" checked={billDesignForm.showPhone} onChange={(e) => handleBillDesignChange('showPhone', e.target.checked)} />
+                    <span>Show on bill</span>
+                  </label>
+                </div>
+                <input type="text" value={billDesignForm.storePhone} onChange={(e) => handleBillDesignChange('storePhone', e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs" placeholder="077 123 4567" />
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Footer Message</label>
+                  <input type="text" value={billDesignForm.footerMessage} onChange={(e) => handleBillDesignChange('footerMessage', e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs" placeholder="Thank You! Come Again." />
+                </div>
+              </div>
+
+              {/* Logo */}
+              <div className="space-y-2 border-t pt-4">
+                <h4 className="text-[11px] font-black text-gray-400 uppercase">Store Logo</h4>
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center space-x-1 text-[11px] font-bold text-gray-500">
+                    <input type="checkbox" checked={billDesignForm.showLogo} onChange={(e) => handleBillDesignChange('showLogo', e.target.checked)} />
+                    <span>Print Logo on Bill</span>
+                  </label>
+                </div>
+                <div className="flex items-center space-x-3">
+                  <label className="bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-[11px] font-black px-3 py-2 rounded-lg cursor-pointer transition">
+                    📤 Upload Logo
+                    <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
+                  </label>
+                  {billDesignForm.logoBase64 && (
+                    <button onClick={handleRemoveLogo} className="text-red-500 text-[11px] font-black hover:underline">✕ Remove Logo</button>
+                  )}
+                </div>
+                {billDesignForm.logoBase64 && (
+                  <div className="border rounded-xl p-2 bg-gray-50 inline-block">
+                    <img src={billDesignForm.logoBase64} alt="Logo Preview" className="h-16 object-contain" />
+                  </div>
+                )}
+                <p className="text-[10px] text-gray-400">Best results: a simple black &amp; white / high-contrast logo, under 1MB.</p>
+              </div>
+
+              {/* Printer Paper Size & Font */}
+              <div className="space-y-3 border-t pt-4">
+                <h4 className="text-[11px] font-black text-gray-400 uppercase">Print Size</h4>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Thermal Paper Width</label>
+                  <select value={billDesignForm.paperWidth} onChange={(e) => handleBillDesignChange('paperWidth', e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs bg-white">
+                    {Object.entries(PAPER_WIDTH_CONFIG).map(([key, cfg]) => (
+                      <option key={key} value={key}>{cfg.label}</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-gray-400 mt-1">Small Bluetooth 3-inch thermal printers should use <b>80mm (3 inch)</b>.</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Store Name Font Size</label>
+                  <div className="flex space-x-2">
+                    <button onClick={() => handleBillDesignChange('fontSize', 'NORMAL')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.fontSize === 'NORMAL' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Normal</button>
+                    <button onClick={() => handleBillDesignChange('fontSize', 'LARGE')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.fontSize === 'LARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Large</button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex space-x-2 border-t pt-4">
+                <button onClick={handleSaveBillDesign} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-xl font-black text-xs transition">
+                  💾 Save Bill Design
+                </button>
+                <button onClick={handleTestPrint} disabled={isSendingTestPrint} className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white p-3 rounded-xl font-black text-xs transition">
+                  {isSendingTestPrint ? '⏳ Sending...' : '🖨️ Send Test Print'}
+                </button>
+              </div>
+            </div>
+
+            {/* Live Preview Column */}
+            <div className="md:col-span-5 bg-gray-100 p-4 rounded-2xl border h-full overflow-y-auto flex flex-col items-center">
+              <h4 className="text-[11px] font-black text-gray-400 uppercase mb-3 self-start">👀 Live Preview</h4>
+              <div
+                className="bg-white shadow-md p-3"
+                style={{ width: previewCharsWidth, fontFamily: 'monospace', boxShadow: '0 2px 10px rgba(0,0,0,0.08)' }}
+              >
+                {billDesignForm.showLogo && billDesignForm.logoBase64 && (
+                  <img src={billDesignForm.logoBase64} alt="logo" className="mx-auto mb-2 max-h-16 object-contain" />
+                )}
+                <div className="text-center font-black leading-tight" style={{ fontSize: billDesignForm.fontSize === 'LARGE' ? '15px' : '11px' }}>
+                  {billDesignForm.storeName || 'MY RESTAURANT'}
+                </div>
+                {billDesignForm.showAddress && billDesignForm.storeAddress && (
+                  <div className="text-center text-[9px] text-gray-600">{billDesignForm.storeAddress}</div>
+                )}
+                {billDesignForm.showPhone && billDesignForm.storePhone && (
+                  <div className="text-center text-[9px] text-gray-600">Tel: {billDesignForm.storePhone}</div>
+                )}
+                <div className="text-center text-[9px] font-bold my-1">--- FINAL INVOICE ---</div>
+                <div className="text-[9px] border-t border-b border-dashed border-gray-400 py-1 my-1 flex justify-between">
+                  <span>Table: Table 1</span>
+                  <span>{new Date().toLocaleDateString()}</span>
+                </div>
+                <div className="text-[9px] space-y-0.5 py-1">
+                  <div className="flex justify-between"><span>Sample Item 1</span><span></span></div>
+                  <div className="flex justify-between text-gray-500"><span>2 x 250</span><span>= Rs.500</span></div>
+                  <div className="flex justify-between"><span>Sample Item 2</span><span></span></div>
+                  <div className="flex justify-between text-gray-500"><span>1 x 450</span><span>= Rs.450</span></div>
+                </div>
+                <div className="border-t border-dashed border-gray-400 my-1"></div>
+                <div className="text-[9px] space-y-0.5">
+                  <div className="flex justify-between"><span>Sub Total:</span><span>Rs.950.00</span></div>
+                  <div className="flex justify-between"><span>Service Charge:</span><span>Rs.95.00</span></div>
+                  <div className="flex justify-between font-black text-[10px] border-t border-dashed pt-0.5 mt-0.5"><span>NET TOTAL:</span><span>Rs.1045.00</span></div>
+                </div>
+                <div className="text-center text-[9px] mt-2">{billDesignForm.footerMessage || 'Thank You! Come Again.'}</div>
+              </div>
+              <p className="text-[10px] text-gray-400 mt-3 text-center px-4">This mirrors roughly what will print on your thermal paper (actual print uses ESC/POS raster for the logo).</p>
+            </div>
+          </>
         )}
 
         {/* 🧑‍💼 PROFILE SETTINGS WORKSPACE */}
@@ -981,7 +1164,7 @@ export default function AdminPanel({ onBackToBilling }) {
                   </h3>
                   <p className="text-[11px] text-gray-400">Cashier and Admin Account Management</p>
                 </div>
-                
+
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">Username / Name</label>
                   <input 

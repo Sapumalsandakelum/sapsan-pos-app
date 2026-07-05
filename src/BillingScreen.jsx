@@ -395,7 +395,7 @@ export default function BillingScreen({ isTakeaway = false }) {
           {cart.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-gray-300">
               <span className="text-4xl">{isTakeaway ? '🛍️' : '🧾'}</span>
-              <p className="text-xs font-bold mt-1">{isTakeaway ? 'Takeaway Order එකක් ඇතුළත් කරන්න' : 'Order එකක් ඇතුළත් කරන්න'}</p>
+              <p className="text-xs font-bold mt-1">{isTakeaway ? 'Make a Takeaway Order' : 'Make a Order'}</p>
             </div>
           ) : (
             cart.map((item, index) => (

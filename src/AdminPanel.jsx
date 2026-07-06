@@ -8,7 +8,10 @@ import {
   saveBillDesignSettings,
   PAPER_WIDTH_CONFIG,
   generateBillReceipt,
-  printViaBluetooth
+  generateKitchenReceipt,
+  printViaBluetooth,
+  DEVELOPER_CREDIT_LINE_1,
+  DEVELOPER_CREDIT_LINE_2
 } from './printUtils';
 
 export default function AdminPanel({ onBackToBilling }) {
@@ -163,6 +166,7 @@ export default function AdminPanel({ onBackToBilling }) {
     return saved ? JSON.parse(saved) : { kot: '', bot: '', bill: '' };
   });
   const [isScanning, setIsScanning] = useState(false);
+  const [isLoadingUSB, setIsLoadingUSB] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('pos_paired_bluetooth_devices', JSON.stringify(pairedDevices));
@@ -227,7 +231,55 @@ export default function AdminPanel({ onBackToBilling }) {
       addDevice({ id, name, type: 'USB', vendorId: device.vendorId, productId: device.productId });
       Swal.fire({ icon: 'success', title: `✅ ${name} Added successfully!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 1800 });
     } catch (err) {
-      if (err.name !== 'NotFoundError') console.error(err);
+      if (err.name === 'NotFoundError') {
+        Swal.fire({
+          icon: 'info',
+          title: 'No USB Printer Found in List',
+          html: `If the picker showed an empty list, Windows has likely already claimed the printer with its normal driver — WebUSB can't see it until that's changed.<br/><br/>Try <b>🔄 Refresh USB Devices</b> below, or use <b>Zadig</b> to switch the printer to the WinUSB driver, or connect it via Bluetooth instead.`
+        });
+      } else {
+        console.error(err);
+        Swal.fire({ icon: 'error', title: 'USB Connection Failed', text: err.message });
+      }
+    }
+  };
+
+  // 🔄 Refresh: silently re-check devices this browser already has permission for
+  // (no picker popup) — useful if the printer was granted access before but dropped
+  // out of the paired list, e.g. after a browser restart.
+  const handleLoadPairedUSB = async () => {
+    if (!navigator.usb) {
+      Swal.fire({ icon: 'error', title: 'WebUSB not Supported!', text: 'Use Chrome or Edge browser (v61+).' });
+      return;
+    }
+    setIsLoadingUSB(true);
+    try {
+      const grantedDevices = await navigator.usb.getDevices();
+      if (grantedDevices.length === 0) {
+        Swal.fire({
+          icon: 'info',
+          title: 'No Authorized USB Devices Found',
+          html: `This browser hasn't been granted permission to any USB printer yet, or Windows is still holding the device with its standard driver.<br/><br/>Try <b>Connect USB Printer</b> first to grant permission, or use Zadig to switch the printer's driver to WinUSB.`
+        });
+        return;
+      }
+      let addedCount = 0;
+      grantedDevices.forEach(device => {
+        const name = device.productName || `USB Printer (${device.vendorId.toString(16).toUpperCase()})`;
+        const id = `usb-${device.vendorId}-${device.productId}`;
+        if (!pairedDevices.some(d => d.id === id)) addedCount++;
+        addDevice({ id, name, type: 'USB', vendorId: device.vendorId, productId: device.productId });
+      });
+      Swal.fire({
+        icon: 'success',
+        title: addedCount > 0 ? `${addedCount} USB device(s) refreshed!` : 'USB devices refreshed (already up to date)',
+        toast: true, position: 'top-end', showConfirmButton: false, timer: 2000
+      });
+    } catch (err) {
+      console.error(err);
+      Swal.fire({ icon: 'error', title: 'Failed to Refresh USB Devices', text: err.message });
+    } finally {
+      setIsLoadingUSB(false);
     }
   };
 
@@ -319,12 +371,35 @@ export default function AdminPanel({ onBackToBilling }) {
         { name: 'Sample Item 1', sellingPrice: 250, quantity: 2 },
         { name: 'Sample Item 2', sellingPrice: 450, quantity: 1 },
       ];
-      const receipt = await generateBillReceipt(false, 'Test Table', 'TEST PRINT', 950, 95, 0, 1045, sampleItems);
+      const receipt = await generateBillReceipt(false, 'Test Table', 'TEST PRINT', 950, 95, 0, 1045, sampleItems, 999);
       const success = await printViaBluetooth('bill', receipt);
       if (success) {
         Swal.fire({ icon: 'success', title: 'Test Print Sent! ✅', toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
       } else {
         Swal.fire({ icon: 'warning', title: 'No Bill Printer Assigned', text: 'Go to Step ③ "Assign Printer Roles" above and set a printer for BILL first.' });
+      }
+    } catch (err) {
+      console.error(err);
+      Swal.fire({ icon: 'error', title: 'Test Print Failed', text: err.message });
+    } finally {
+      setIsSendingTestPrint(false);
+    }
+  };
+
+  const handleTestKotBotPrint = async (role) => {
+    saveBillDesignSettings(billDesignForm);
+    setIsSendingTestPrint(true);
+    try {
+      const sampleItems = [
+        { quantity: 2, name: 'Chicken Fried Rice' },
+        { quantity: 1, name: 'Iced Coffee' },
+      ];
+      const receipt = generateKitchenReceipt(false, 'Test Table', role === 'kot' ? 'KOT (KITCHEN)' : 'BOT (BAR)', sampleItems, 999);
+      const success = await printViaBluetooth(role, receipt);
+      if (success) {
+        Swal.fire({ icon: 'success', title: `${role.toUpperCase()} Test Print Sent! ✅`, toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
+      } else {
+        Swal.fire({ icon: 'warning', title: `No ${role.toUpperCase()} Printer Assigned`, text: `Go to Step ③ "Assign Printer Roles" above and set a printer for ${role.toUpperCase()} first.` });
       }
     } catch (err) {
       console.error(err);
@@ -916,6 +991,13 @@ export default function AdminPanel({ onBackToBilling }) {
                     >
                       🔌 Connect USB Printer
                     </button>
+                    <button
+                      onClick={handleLoadPairedUSB}
+                      disabled={isLoadingUSB}
+                      className="w-full bg-white border border-yellow-400 hover:bg-yellow-100 text-yellow-700 text-[11px] font-black py-2 rounded-lg transition disabled:opacity-50"
+                    >
+                      {isLoadingUSB ? '⏳ Refreshing...' : '🔄 Refresh USB Devices'}
+                    </button>
                     <div className="text-[9px] text-yellow-700 bg-yellow-100 rounded-lg p-1.5 text-center">
                       Chrome / Edge v61+ <br/>USB cable printer directly connect
                     </div>
@@ -1016,8 +1098,8 @@ export default function AdminPanel({ onBackToBilling }) {
             {/* Form Column */}
             <div className="md:col-span-7 bg-white p-4 rounded-2xl border h-full overflow-y-auto space-y-5">
               <div>
-                <h3 className="text-sm font-black text-gray-700 uppercase">🧾 Bill Layout & Store Info</h3>
-                <p className="text-[11px] text-gray-400">Customize what prints on the customer bill (Pre-Bill / Final Invoice).</p>
+                <h3 className="text-sm font-black text-gray-700 uppercase">🧾 Bill, KOT &amp; BOT Layout</h3>
+                <p className="text-[11px] text-gray-400">Customize everything that prints on the customer bill, kitchen ticket (KOT), and bar ticket (BOT).</p>
               </div>
 
               {/* Store Info */}
@@ -1074,10 +1156,10 @@ export default function AdminPanel({ onBackToBilling }) {
                     <img src={billDesignForm.logoBase64} alt="Logo Preview" className="h-16 object-contain" />
                   </div>
                 )}
-                <p className="text-[10px] text-gray-400">Best results: a simple black &amp; white / high-contrast logo, under 1MB.</p>
+                <p className="text-[10px] text-gray-400">Any logo you upload is automatically fit to a fixed <b>{`full roll width × 1.5 inch`}</b> box (proportional, centered) — so it always prints the same size no matter the source image.</p>
               </div>
 
-              {/* Printer Paper Size & Font */}
+              {/* Printer Paper Size & Bill Sizing */}
               <div className="space-y-3 border-t pt-4">
                 <h4 className="text-[11px] font-black text-gray-400 uppercase">Print Size</h4>
                 <div>
@@ -1090,67 +1172,184 @@ export default function AdminPanel({ onBackToBilling }) {
                   <p className="text-[10px] text-gray-400 mt-1">Small Bluetooth 3-inch thermal printers should use <b>80mm (3 inch)</b>.</p>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Store Name Font Size</label>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Minimum Bill Length (inches)</label>
+                  <input
+                    type="number" min="1" step="0.5"
+                    value={billDesignForm.minBillHeightInch}
+                    onChange={(e) => handleBillDesignChange('minBillHeightInch', parseFloat(e.target.value) || 0)}
+                    className="w-full p-2.5 border rounded-xl font-bold text-xs"
+                  />
+                  <p className="text-[10px] text-gray-400 mt-1">If the bill content is shorter than this, extra paper is fed before the cut so every bill is at least this long (Pre-Bill &amp; Final Invoice only — not KOT/BOT).</p>
+                </div>
+              </div>
+
+              {/* Bill Number */}
+              <div className="border-t pt-4">
+                <label className="flex items-center space-x-2 text-xs font-bold text-gray-500">
+                  <input type="checkbox" checked={billDesignForm.showBillNumber} onChange={(e) => handleBillDesignChange('showBillNumber', e.target.checked)} />
+                  <span>Print Bill No. on Bill / KOT / BOT</span>
+                </label>
+                <p className="text-[10px] text-gray-400 mt-1 ml-6">Uses the order's own system ID as the bill number — always unique.</p>
+              </div>
+
+              {/* Bill Font Sizes */}
+              <div className="space-y-3 border-t pt-4">
+                <h4 className="text-[11px] font-black text-gray-400 uppercase">Bill Font Size</h4>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Store Name</label>
                   <div className="flex space-x-2">
-                    <button onClick={() => handleBillDesignChange('fontSize', 'NORMAL')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.fontSize === 'NORMAL' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Normal</button>
-                    <button onClick={() => handleBillDesignChange('fontSize', 'LARGE')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.fontSize === 'LARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Large</button>
+                    <button onClick={() => handleBillDesignChange('storeNameFontSize', 'NORMAL')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.storeNameFontSize === 'NORMAL' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Normal</button>
+                    <button onClick={() => handleBillDesignChange('storeNameFontSize', 'LARGE')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.storeNameFontSize === 'LARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Large</button>
                   </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Bill Body Text (items, totals)</label>
+                  <div className="flex space-x-2">
+                    <button onClick={() => handleBillDesignChange('billFontSize', 'NORMAL')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.billFontSize === 'NORMAL' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Normal</button>
+                    <button onClick={() => handleBillDesignChange('billFontSize', 'LARGE')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.billFontSize === 'LARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Large</button>
+                    <button onClick={() => handleBillDesignChange('billFontSize', 'XLARGE')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.billFontSize === 'XLARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Extra Large</button>
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-1"><b>NET TOTAL</b> always prints bold and one size step bigger than this, automatically.</p>
+                </div>
+              </div>
+
+              {/* KOT / BOT Settings */}
+              <div className="space-y-3 border-t pt-4">
+                <h4 className="text-[11px] font-black text-gray-400 uppercase">🔥 KOT &amp; BOT Ticket Layout</h4>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Font Size</label>
+                  <div className="flex space-x-2">
+                    <button onClick={() => handleBillDesignChange('kotBotFontSize', 'NORMAL')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.kotBotFontSize === 'NORMAL' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-500'}`}>Normal</button>
+                    <button onClick={() => handleBillDesignChange('kotBotFontSize', 'LARGE')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.kotBotFontSize === 'LARGE' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-500'}`}>Large</button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="flex items-center space-x-2 text-[11px] font-bold text-gray-500 bg-gray-50 border rounded-lg p-2">
+                    <input type="checkbox" checked={billDesignForm.kotBotShowDate} onChange={(e) => handleBillDesignChange('kotBotShowDate', e.target.checked)} />
+                    <span>Show Date</span>
+                  </label>
+                  <label className="flex items-center space-x-2 text-[11px] font-bold text-gray-500 bg-gray-50 border rounded-lg p-2">
+                    <input type="checkbox" checked={billDesignForm.kotBotShowTime} onChange={(e) => handleBillDesignChange('kotBotShowTime', e.target.checked)} />
+                    <span>Show Time</span>
+                  </label>
+                  <label className="flex items-center space-x-2 text-[11px] font-bold text-gray-500 bg-gray-50 border rounded-lg p-2">
+                    <input type="checkbox" checked={billDesignForm.kotBotShowTable} onChange={(e) => handleBillDesignChange('kotBotShowTable', e.target.checked)} />
+                    <span>Show Table</span>
+                  </label>
+                  <label className="flex items-center space-x-2 text-[11px] font-bold text-gray-500 bg-gray-50 border rounded-lg p-2">
+                    <input type="checkbox" checked={billDesignForm.kotBotShowBillNumber} onChange={(e) => handleBillDesignChange('kotBotShowBillNumber', e.target.checked)} />
+                    <span>Show Bill No.</span>
+                  </label>
                 </div>
               </div>
 
               {/* Actions */}
-              <div className="flex space-x-2 border-t pt-4">
-                <button onClick={handleSaveBillDesign} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-xl font-black text-xs transition">
+              <div className="space-y-2 border-t pt-4">
+                <button onClick={handleSaveBillDesign} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-xl font-black text-xs transition">
                   💾 Save Bill Design
                 </button>
-                <button onClick={handleTestPrint} disabled={isSendingTestPrint} className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white p-3 rounded-xl font-black text-xs transition">
-                  {isSendingTestPrint ? '⏳ Sending...' : '🖨️ Send Test Print'}
-                </button>
+                <div className="grid grid-cols-3 gap-2">
+                  <button onClick={handleTestPrint} disabled={isSendingTestPrint} className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white p-2.5 rounded-xl font-black text-[11px] transition">
+                    🧾 Test Bill
+                  </button>
+                  <button onClick={() => handleTestKotBotPrint('kot')} disabled={isSendingTestPrint} className="bg-orange-500 hover:bg-orange-600 disabled:bg-orange-300 text-white p-2.5 rounded-xl font-black text-[11px] transition">
+                    🔥 Test KOT
+                  </button>
+                  <button onClick={() => handleTestKotBotPrint('bot')} disabled={isSendingTestPrint} className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white p-2.5 rounded-xl font-black text-[11px] transition">
+                    🍹 Test BOT
+                  </button>
+                </div>
               </div>
             </div>
 
             {/* Live Preview Column */}
-            <div className="md:col-span-5 bg-gray-100 p-4 rounded-2xl border h-full overflow-y-auto flex flex-col items-center">
-              <h4 className="text-[11px] font-black text-gray-400 uppercase mb-3 self-start">👀 Live Preview</h4>
-              <div
-                className="bg-white shadow-md p-3"
-                style={{ width: previewCharsWidth, fontFamily: 'monospace', boxShadow: '0 2px 10px rgba(0,0,0,0.08)' }}
-              >
-                {billDesignForm.showLogo && billDesignForm.logoBase64 && (
-                  <img src={billDesignForm.logoBase64} alt="logo" className="mx-auto mb-2 max-h-16 object-contain" />
-                )}
-                <div className="text-center font-black leading-tight" style={{ fontSize: billDesignForm.fontSize === 'LARGE' ? '15px' : '11px' }}>
-                  {billDesignForm.storeName || 'MY RESTAURANT'}
+            <div className="md:col-span-5 bg-gray-100 p-4 rounded-2xl border h-full overflow-y-auto flex flex-col items-center space-y-6">
+
+              {/* Bill Preview */}
+              <div className="w-full flex flex-col items-center">
+                <h4 className="text-[11px] font-black text-gray-400 uppercase mb-3 self-start">👀 Bill Preview</h4>
+                <div
+                  className="bg-white shadow-md p-3"
+                  style={{ width: previewCharsWidth, fontFamily: 'monospace', boxShadow: '0 2px 10px rgba(0,0,0,0.08)' }}
+                >
+                  {billDesignForm.showLogo && billDesignForm.logoBase64 && (
+                    <div className="mx-auto mb-2 flex items-center justify-center bg-white" style={{ width: '100%', height: '48px' }}>
+                      <img src={billDesignForm.logoBase64} alt="logo" className="max-w-full max-h-full object-contain" />
+                    </div>
+                  )}
+                  <div className="text-center font-black leading-tight" style={{ fontSize: billDesignForm.storeNameFontSize === 'LARGE' ? '15px' : '11px' }}>
+                    {billDesignForm.storeName || 'MY RESTAURANT'}
+                  </div>
+                  {billDesignForm.showAddress && billDesignForm.storeAddress && (
+                    <div className="text-center text-[9px] text-gray-600">{billDesignForm.storeAddress}</div>
+                  )}
+                  {billDesignForm.showPhone && billDesignForm.storePhone && (
+                    <div className="text-center text-[9px] text-gray-600">Tel: {billDesignForm.storePhone}</div>
+                  )}
+                  <div className="text-center text-[9px] font-bold my-1">--- FINAL INVOICE ---</div>
+                  {billDesignForm.showBillNumber && (
+                    <div className="text-[9px] text-center">Bill No: #999</div>
+                  )}
+                  <div className="text-[9px] border-t border-b border-dashed border-gray-400 py-1 my-1 flex justify-between">
+                    <span>Table: Table 1</span>
+                  </div>
+                  <div className="text-[9px] text-center mb-1">{new Date().toLocaleDateString()} {new Date().toLocaleTimeString()}</div>
+                  <div className="text-[9px] space-y-0.5 py-1" style={{ fontSize: billDesignForm.billFontSize === 'XLARGE' ? '11px' : billDesignForm.billFontSize === 'LARGE' ? '10px' : '9px' }}>
+                    <div className="flex justify-between"><span>Sample Item 1</span><span></span></div>
+                    <div className="flex justify-between text-gray-500"><span>2 x 250</span><span>= Rs.500</span></div>
+                    <div className="flex justify-between"><span>Sample Item 2</span><span></span></div>
+                    <div className="flex justify-between text-gray-500"><span>1 x 450</span><span>= Rs.450</span></div>
+                  </div>
+                  <div className="border-t border-dashed border-gray-400 my-1"></div>
+                  <div className="text-[9px] space-y-0.5">
+                    <div className="flex justify-between"><span>Sub Total:</span><span>Rs.950.00</span></div>
+                    <div className="flex justify-between"><span>Service Charge:</span><span>Rs.95.00</span></div>
+                    <div
+                      className="flex justify-between font-black border-t border-dashed pt-1 mt-1"
+                      style={{ fontSize: billDesignForm.billFontSize === 'XLARGE' ? '15px' : '13px' }}
+                    >
+                      <span>NET TOTAL:</span><span>Rs.1045.00</span>
+                    </div>
+                  </div>
+                  <div className="text-center text-[9px] mt-2">{billDesignForm.footerMessage || 'Thank You! Come Again.'}</div>
+                  <div className="text-center text-[7px] text-gray-400 mt-2 leading-tight">
+                    <div>{DEVELOPER_CREDIT_LINE_1}</div>
+                    <div>{DEVELOPER_CREDIT_LINE_2}</div>
+                  </div>
                 </div>
-                {billDesignForm.showAddress && billDesignForm.storeAddress && (
-                  <div className="text-center text-[9px] text-gray-600">{billDesignForm.storeAddress}</div>
-                )}
-                {billDesignForm.showPhone && billDesignForm.storePhone && (
-                  <div className="text-center text-[9px] text-gray-600">Tel: {billDesignForm.storePhone}</div>
-                )}
-                <div className="text-center text-[9px] font-bold my-1">--- FINAL INVOICE ---</div>
-                <div className="text-[9px] border-t border-b border-dashed border-gray-400 py-1 my-1 flex justify-between">
-                  <span>Table: Table 1</span>
-                  <span>{new Date().toLocaleDateString()}</span>
-                </div>
-                <div className="text-[9px] space-y-0.5 py-1">
-                  <div className="flex justify-between"><span>Sample Item 1</span><span></span></div>
-                  <div className="flex justify-between text-gray-500"><span>2 x 250</span><span>= Rs.500</span></div>
-                  <div className="flex justify-between"><span>Sample Item 2</span><span></span></div>
-                  <div className="flex justify-between text-gray-500"><span>1 x 450</span><span>= Rs.450</span></div>
-                </div>
-                <div className="border-t border-dashed border-gray-400 my-1"></div>
-                <div className="text-[9px] space-y-0.5">
-                  <div className="flex justify-between"><span>Sub Total:</span><span>Rs.950.00</span></div>
-                  <div className="flex justify-between"><span>Service Charge:</span><span>Rs.95.00</span></div>
-                  <div className="flex justify-between font-black text-[10px] border-t border-dashed pt-0.5 mt-0.5"><span>NET TOTAL:</span><span>Rs.1045.00</span></div>
-                </div>
-                <div className="text-center text-[9px] mt-2">{billDesignForm.footerMessage || 'Thank You! Come Again.'}</div>
               </div>
-              <p className="text-[10px] text-gray-400 mt-3 text-center px-4">This mirrors roughly what will print on your thermal paper (actual print uses ESC/POS raster for the logo).</p>
+
+              {/* KOT/BOT Preview */}
+              <div className="w-full flex flex-col items-center">
+                <h4 className="text-[11px] font-black text-gray-400 uppercase mb-3 self-start">🔥 KOT / BOT Preview</h4>
+                <div
+                  className="bg-white shadow-md p-3"
+                  style={{ width: previewCharsWidth, fontFamily: 'monospace', boxShadow: '0 2px 10px rgba(0,0,0,0.08)' }}
+                >
+                  <div className="text-center font-black" style={{ fontSize: billDesignForm.kotBotFontSize === 'LARGE' ? '13px' : '10px' }}>*** KOT (KITCHEN) ***</div>
+                  {billDesignForm.kotBotShowBillNumber && <div className="text-[9px] text-center">Bill No: #999</div>}
+                  {billDesignForm.kotBotShowTable && <div className="text-[9px] text-center">Table: Table 1</div>}
+                  {(billDesignForm.kotBotShowDate || billDesignForm.kotBotShowTime) && (
+                    <div className="text-[9px] text-center">
+                      {billDesignForm.kotBotShowDate ? `Date: ${new Date().toLocaleDateString()}` : ''}
+                      {billDesignForm.kotBotShowDate && billDesignForm.kotBotShowTime ? '  ' : ''}
+                      {billDesignForm.kotBotShowTime ? `Time: ${new Date().toLocaleTimeString()}` : ''}
+                    </div>
+                  )}
+                  <div className="border-t border-dashed border-gray-400 my-1"></div>
+                  <div className="text-left space-y-0.5" style={{ fontSize: billDesignForm.kotBotFontSize === 'LARGE' ? '11px' : '9px' }}>
+                    <div>2 x Chicken Fried Rice</div>
+                    <div>1 x Iced Coffee</div>
+                  </div>
+                  <div className="border-t border-dashed border-gray-400 my-1"></div>
+                </div>
+              </div>
+
+              <p className="text-[10px] text-gray-400 text-center px-4">Previews are an approximation — actual thermal print spacing depends on your printer's firmware.</p>
             </div>
           </>
         )}
+
 
         {/* 🧑‍💼 PROFILE SETTINGS WORKSPACE */}
         {activeSubTab === 'PROFILE' && (

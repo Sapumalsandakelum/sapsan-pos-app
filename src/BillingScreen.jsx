@@ -205,12 +205,14 @@ export default function BillingScreen({ isTakeaway = false }) {
     try {
       const existingOrder = activeOrders.find(o => o.tableNumber === orderIdentifier);
       let currentPreBillState = isPreBillPrinted;
+      let savedOrderId;
 
       if (existingOrder) {
         currentPreBillState = false;
         await db.orders.update(existingOrder.id, { subTotal, totalServiceCharge, netTotal, isPreBillPrinted: false, items: finalItemsForDb });
+        savedOrderId = existingOrder.id;
       } else {
-        await db.orders.add({ orderDate: new Date(), tableNumber: orderIdentifier, subTotal, totalServiceCharge, discountAmount: 0, netTotal, paymentMethod: 'PENDING', status: 'PENDING', isPreBillPrinted: false, items: finalItemsForDb });
+        savedOrderId = await db.orders.add({ orderDate: new Date(), tableNumber: orderIdentifier, subTotal, totalServiceCharge, discountAmount: 0, netTotal, paymentMethod: 'PENDING', status: 'PENDING', isPreBillPrinted: false, items: finalItemsForDb });
         currentPreBillState = false;
       }
 
@@ -219,11 +221,11 @@ export default function BillingScreen({ isTakeaway = false }) {
       setIsPreBillPrinted(currentPreBillState);
 
       if (kotItems.length > 0) {
-        const kotReceipt = generateKitchenReceipt(isTakeaway, orderIdentifier, 'KOT (KITCHEN)', kotItems);
+        const kotReceipt = generateKitchenReceipt(isTakeaway, orderIdentifier, 'KOT (KITCHEN)', kotItems, savedOrderId);
         await printViaBluetooth('kot', kotReceipt);
       }
       if (botItems.length > 0) {
-        const botReceipt = generateKitchenReceipt(isTakeaway, orderIdentifier, 'BOT (BAR)', botItems);
+        const botReceipt = generateKitchenReceipt(isTakeaway, orderIdentifier, 'BOT (BAR)', botItems, savedOrderId);
         await printViaBluetooth('bot', botReceipt);
       }
 
@@ -259,7 +261,7 @@ export default function BillingScreen({ isTakeaway = false }) {
     }
 
     Swal.fire({ title: 'Printing Pre-Bill...', didOpen: () => Swal.showLoading(), allowOutsideClick: false, showConfirmButton: false });
-    const preBillReceipt = await generateBillReceipt(isTakeaway, orderIdentifier, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart);
+    const preBillReceipt = await generateBillReceipt(isTakeaway, orderIdentifier, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart, existingOrder ? existingOrder.id : null);
     const printed = await printViaBluetooth('bill', preBillReceipt);
     Swal.close();
 
@@ -280,7 +282,7 @@ export default function BillingScreen({ isTakeaway = false }) {
       await db.orders.update(existingOrder.id, { discountAmount, netTotal: finalTotal, paymentMethod, status: 'SETTLED', settledDate: new Date() });
 
       Swal.fire({ title: 'Printing Final Invoice...', didOpen: () => Swal.showLoading(), allowOutsideClick: false, showConfirmButton: false });
-      const finalReceipt = await generateBillReceipt(isTakeaway, orderIdentifier, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart);
+      const finalReceipt = await generateBillReceipt(isTakeaway, orderIdentifier, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart, existingOrder.id);
       const printed = await printViaBluetooth('bill', finalReceipt);
       Swal.close();
 
@@ -395,7 +397,7 @@ export default function BillingScreen({ isTakeaway = false }) {
           {cart.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-gray-300">
               <span className="text-4xl">{isTakeaway ? '🛍️' : '🧾'}</span>
-              <p className="text-xs font-bold mt-1">{isTakeaway ? 'Make a Takeaway Order' : 'Make a Order'}</p>
+              <p className="text-xs font-bold mt-1">{isTakeaway ? 'Takeaway Order එකක් ඇතුළත් කරන්න' : 'Order එකක් ඇතුළත් කරන්න'}</p>
             </div>
           ) : (
             cart.map((item, index) => (

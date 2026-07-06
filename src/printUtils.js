@@ -1,7 +1,7 @@
 // src/printUtils.js
 // 🖨️ Shared printing engine: Bluetooth / USB / Serial thermal printer support,
-// Bill Design settings (store name, logo, paper size), and receipt generators.
-// Used by both BillingScreen.jsx (actual printing) and AdminPanel.jsx (design + test print).
+// Bill Design settings (store name, logo, paper size, bill number, min height),
+// and receipt generators for Bill / KOT / BOT.
 
 import Swal from 'sweetalert2';
 
@@ -19,11 +19,35 @@ export const ESC_ALIGN_RIGHT = new Uint8Array([0x1B, 0x61, 0x02]);
 export const ESC_FONT_BOLD = new Uint8Array([0x1B, 0x45, 0x01]);
 export const ESC_FONT_NORMAL = new Uint8Array([0x1B, 0x45, 0x00]);
 export const ESC_FEED_PAPER = new Uint8Array([0x1D, 0x56, 0x42, 0x03]);
-// GS ! n — character size. n=0x11 = double width + double height, n=0x00 = normal
-export const ESC_SIZE_LARGE = new Uint8Array([0x1D, 0x21, 0x11]);
-export const ESC_SIZE_NORMAL = new Uint8Array([0x1D, 0x21, 0x00]);
+
+// GS ! n — character size. Upper nibble = width magnification, lower nibble = height magnification.
+export const ESC_SIZE_NORMAL = new Uint8Array([0x1D, 0x21, 0x00]); // 1x1
+export const ESC_SIZE_LARGE = new Uint8Array([0x1D, 0x21, 0x11]);  // 2x2
+export const ESC_SIZE_XLARGE = new Uint8Array([0x1D, 0x21, 0x22]); // 3x3
+
+// ESC J n — print and feed paper n dots (used to pad bills to a minimum length)
+export const escFeedDots = (dots) => {
+  const commands = [];
+  let remaining = Math.max(0, Math.round(dots));
+  while (remaining > 0) {
+    const n = Math.min(remaining, 255);
+    commands.push(new Uint8Array([0x1B, 0x4A, n]));
+    remaining -= n;
+  }
+  return commands;
+};
 
 const BT_SERVICE_UUIDS = ['000018f0-0000-1000-8000-00805f9b34fb', '00001101-0000-1000-8000-00805f9b34fb'];
+
+// Fixed technical constants — not user-editable by design
+export const PRINTER_DPI = 203;       // standard resolution for the vast majority of thermal printers
+export const LOGO_HEIGHT_INCH = 1.5;  // fixed logo box height, per spec
+export const DEVELOPER_CREDIT_LINE_1 = 'SapSan Technologies';
+export const DEVELOPER_CREDIT_LINE_2 = '0779040332';
+
+// Approximate printed line heights in mm, used only to estimate total bill length
+// so we know how much extra paper to feed to hit the minimum bill height.
+const LINE_HEIGHT_MM = { NORMAL: 3.75, LARGE: 7.5, XLARGE: 11.25 };
 
 // ==========================================
 // 🧾 BILL DESIGN SETTINGS (localStorage-backed)
@@ -31,20 +55,35 @@ const BT_SERVICE_UUIDS = ['000018f0-0000-1000-8000-00805f9b34fb', '00001101-0000
 const BILL_DESIGN_KEY = 'pos_bill_design_settings';
 
 export const DEFAULT_BILL_DESIGN = {
+  // Store branding
   storeName: 'SAPSAN RESTAURANT',
   storeAddress: 'Matara, Sri Lanka',
   storePhone: '',
   footerMessage: 'Thank You! Come Again.',
-  paperWidth: '80mm',   // '58mm' | '80mm'
-  fontSize: 'NORMAL',   // 'NORMAL' | 'LARGE'
-  logoBase64: '',
-  showLogo: true,
   showAddress: true,
   showPhone: false,
+
+  // Logo
+  logoBase64: '',
+  showLogo: true,
+
+  // Paper & sizing
+  paperWidth: '80mm',       // '58mm' | '80mm'
+  minBillHeightInch: 6,     // minimum printed length for Pre-Bill / Final Invoice only
+
+  // Bill (customer receipt) settings
+  showBillNumber: true,
+  storeNameFontSize: 'LARGE',  // NORMAL | LARGE
+  billFontSize: 'NORMAL',      // NORMAL | LARGE | XLARGE — overall body text size
+
+  // KOT / BOT (kitchen & bar ticket) settings
+  kotBotFontSize: 'NORMAL',    // NORMAL | LARGE
+  kotBotShowDate: true,
+  kotBotShowTime: true,
+  kotBotShowTable: true,
+  kotBotShowBillNumber: true,
 };
 
-// 3-inch bluetooth thermal printers are almost always sold/driven as "80mm" class printers
-// (≈72mm actual print width). 58mm (2 inch) is the other common size, kept as an option.
 export const PAPER_WIDTH_CONFIG = {
   '58mm': { rasterPx: 384, charsPerLine: 32, label: '58mm (2 inch)' },
   '80mm': { rasterPx: 576, charsPerLine: 48, label: '80mm (3 inch)' },
@@ -67,24 +106,29 @@ export const saveBillDesignSettings = (settings) => {
 // ==========================================
 // 🖼️ LOGO IMAGE → ESC/POS RASTER BITMAP (GS v 0)
 // ==========================================
-// Converts an uploaded logo (base64 data URL) into a 1-bit monochrome raster
-// image command that thermal printers understand natively.
-export const imageToRasterBytes = (base64DataUrl, targetWidthPx) => {
+// Renders the logo into a FIXED-SIZE box (targetWidthPx x targetHeightPx), fitting
+// it inside (contain — preserves aspect ratio, centered, padded with white) so any
+// logo you upload always prints at the same, predictable size.
+export const imageToRasterBytes = (base64DataUrl, targetWidthPx, targetHeightPx) => {
   return new Promise((resolve, reject) => {
     if (!base64DataUrl) { resolve([]); return; }
     const img = new Image();
     img.onload = () => {
       try {
-        const scale = targetWidthPx / img.width;
-        const targetHeightPx = Math.max(1, Math.round(img.height * scale));
-
         const canvas = document.createElement('canvas');
         canvas.width = targetWidthPx;
         canvas.height = targetHeightPx;
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, targetWidthPx, targetHeightPx);
-        ctx.drawImage(img, 0, 0, targetWidthPx, targetHeightPx);
+
+        // Contain-fit: scale to fit inside the box without cropping or stretching
+        const scale = Math.min(targetWidthPx / img.width, targetHeightPx / img.height);
+        const drawWidth = img.width * scale;
+        const drawHeight = img.height * scale;
+        const offsetX = (targetWidthPx - drawWidth) / 2;
+        const offsetY = (targetHeightPx - drawHeight) / 2;
+        ctx.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
 
         const { data } = ctx.getImageData(0, 0, targetWidthPx, targetHeightPx);
         const widthBytes = Math.ceil(targetWidthPx / 8);
@@ -107,7 +151,6 @@ export const imageToRasterBytes = (base64DataUrl, targetWidthPx) => {
         const yL = targetHeightPx & 0xFF;
         const yH = (targetHeightPx >> 8) & 0xFF;
 
-        // GS v 0 m xL xH yL yH [data]
         const header = new Uint8Array([0x1D, 0x76, 0x30, 0x00, xL, xH, yL, yH]);
         const fullCommand = new Uint8Array(header.length + bitmap.length);
         fullCommand.set(header, 0);
@@ -127,21 +170,16 @@ export const imageToRasterBytes = (base64DataUrl, targetWidthPx) => {
 // 🔌 LOW-LEVEL PRINTER TRANSPORTS
 // ==========================================
 
-// 🔵 Bluetooth — FIXED: reconnects to an already-authorized device via getDevices()
-// instead of calling requestDevice() again on every print. requestDevice() needs a
-// *fresh* user gesture and after any `await` earlier in the save/settle flow, that
-// gesture has usually already expired — which is why prints were silently failing.
+// 🔵 Bluetooth — reconnects to an already-authorized device via getDevices() instead
+// of calling requestDevice() again on every print (which needs a fresh user gesture
+// that's usually already expired by print time, causing silent failures).
 const printViaBluetoothDevice = async (storedDevice, targetRole, receiptDataArray) => {
   try {
     let device = null;
-
-    // 1️⃣ Try to silently reuse permission already granted in Admin → Printer Settings
     if (navigator.bluetooth.getDevices) {
       const grantedDevices = await navigator.bluetooth.getDevices();
       device = grantedDevices.find(d => d.id === storedDevice.id);
     }
-
-    // 2️⃣ Fallback only: ask the OS picker again (requires a fresh click just before this)
     if (!device) {
       device = await navigator.bluetooth.requestDevice({
         filters: [{ name: storedDevice.name }],
@@ -236,9 +274,8 @@ const printViaSerialPort = async (deviceInfo, targetRole, receiptDataArray) => {
   }
 };
 
-// 🎯 ROUTER — reads pos_printer_mapping / pos_paired_bluetooth_devices from localStorage
-// (same storage the Admin Panel "Assign Printer Roles" step writes to — this IS the
-// "default printer" per role: kot / bot / bill).
+// 🎯 ROUTER — the printer assigned to each role in Admin → Printer Settings IS the
+// "default printer" for that function (kot / bot / bill).
 export const printViaBluetooth = async (targetRole, receiptDataArray) => {
   const mappingSaved = localStorage.getItem('pos_printer_mapping');
   const devicesSaved = localStorage.getItem('pos_paired_bluetooth_devices');
@@ -264,78 +301,171 @@ export const printViaBluetooth = async (targetRole, receiptDataArray) => {
 };
 
 // ==========================================
-// 🔥 RECEIPT FORMAT GENERATORS (paper-width & bill-design aware)
+// 🔥 RECEIPT FORMAT GENERATORS
 // ==========================================
-export const generateKitchenReceipt = (isTakeaway, tableName, typeLabel, itemsList) => {
-  const { charsPerLine } = PAPER_WIDTH_CONFIG[getBillDesignSettings().paperWidth] || PAPER_WIDTH_CONFIG['80mm'];
+
+// KOT / BOT — kitchen & bar tickets. billNumber is optional (pass the DB order id).
+export const generateKitchenReceipt = (isTakeaway, tableName, typeLabel, itemsList, billNumber) => {
+  const settings = getBillDesignSettings();
+  const { charsPerLine } = PAPER_WIDTH_CONFIG[settings.paperWidth] || PAPER_WIDTH_CONFIG['80mm'];
+  const bodySize = settings.kotBotFontSize === 'LARGE' ? ESC_SIZE_LARGE : ESC_SIZE_NORMAL;
+
   const data = [];
   data.push(ESC_ALIGN_CENTER);
   data.push(ESC_FONT_BOLD);
+  data.push(bodySize);
   data.push(textToBytes(`*** ${typeLabel} ***`));
+  data.push(ESC_SIZE_NORMAL);
   data.push(ESC_FONT_NORMAL);
-  data.push(textToBytes(`${isTakeaway ? 'Type' : 'Table'}: ${tableName}`));
-  data.push(textToBytes(`Date: ${new Date().toLocaleTimeString()}`));
+
+  if (settings.kotBotShowBillNumber && billNumber !== undefined && billNumber !== null) {
+    data.push(textToBytes(`Bill No: #${billNumber}`));
+  }
+  if (settings.kotBotShowTable) {
+    data.push(textToBytes(`${isTakeaway ? 'Type' : 'Table'}: ${tableName}`));
+  }
+
+  const now = new Date();
+  if (settings.kotBotShowDate && settings.kotBotShowTime) {
+    data.push(textToBytes(`Date: ${now.toLocaleDateString()}  Time: ${now.toLocaleTimeString()}`));
+  } else if (settings.kotBotShowDate) {
+    data.push(textToBytes(`Date: ${now.toLocaleDateString()}`));
+  } else if (settings.kotBotShowTime) {
+    data.push(textToBytes(`Time: ${now.toLocaleTimeString()}`));
+  }
+
   data.push(textToBytes('-'.repeat(charsPerLine)));
   data.push(ESC_ALIGN_LEFT);
+  data.push(bodySize);
 
   itemsList.forEach(item => {
     data.push(textToBytes(`${item.quantity} x ${item.name}`));
   });
 
+  data.push(ESC_SIZE_NORMAL);
   data.push(textToBytes('-'.repeat(charsPerLine)));
   return data;
 };
 
-// Now async: may need to fetch + rasterize the store logo before building the receipt.
-export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList) => {
+// Bill / Pre-Bill / Final Invoice — fully customizable via Bill Design settings.
+// billNumber is optional (pass the DB order id); omit or pass null/undefined to hide it
+// even if showBillNumber is on.
+export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, billNumber) => {
   const settings = getBillDesignSettings();
   const { rasterPx, charsPerLine } = PAPER_WIDTH_CONFIG[settings.paperWidth] || PAPER_WIDTH_CONFIG['80mm'];
 
+  const bodySize = settings.billFontSize === 'XLARGE' ? ESC_SIZE_XLARGE : settings.billFontSize === 'LARGE' ? ESC_SIZE_LARGE : ESC_SIZE_NORMAL;
+  const bodyLineMm = LINE_HEIGHT_MM[settings.billFontSize] || LINE_HEIGHT_MM.NORMAL;
+  // NET TOTAL is always at least one size step larger than the body text, and always bold
+  const netTotalSize = settings.billFontSize === 'XLARGE' ? ESC_SIZE_XLARGE : ESC_SIZE_LARGE;
+  const netTotalLineMm = settings.billFontSize === 'XLARGE' ? LINE_HEIGHT_MM.XLARGE : LINE_HEIGHT_MM.LARGE;
+
+  let heightMm = 0;
   const data = [];
   data.push(ESC_ALIGN_CENTER);
+  data.push(bodySize);
 
-  // Logo
+  // Logo — fixed size box: width = full paper roll width, height = 1.5 inch (any logo fits inside)
   if (settings.showLogo && settings.logoBase64) {
     try {
-      const logoBytes = await imageToRasterBytes(settings.logoBase64, rasterPx);
-      data.push(...logoBytes);
+      const logoHeightPx = Math.round(LOGO_HEIGHT_INCH * PRINTER_DPI);
+      const logoBytes = await imageToRasterBytes(settings.logoBase64, rasterPx, logoHeightPx);
+      if (logoBytes.length > 0) {
+        data.push(ESC_SIZE_NORMAL); // raster block is unaffected by char-size mode; keep clean
+        data.push(...logoBytes);
+        data.push(bodySize);
+        heightMm += LOGO_HEIGHT_INCH * 25.4;
+      }
     } catch (err) {
       console.error('Logo raster conversion failed, skipping logo on this print:', err);
     }
   }
 
-  // Store name (optionally large/bold)
+  // Store name
   data.push(ESC_FONT_BOLD);
-  if (settings.fontSize === 'LARGE') data.push(ESC_SIZE_LARGE);
+  const nameSize = settings.storeNameFontSize === 'LARGE' ? ESC_SIZE_LARGE : ESC_SIZE_NORMAL;
+  data.push(nameSize);
   data.push(textToBytes(settings.storeName || 'MY RESTAURANT'));
-  if (settings.fontSize === 'LARGE') data.push(ESC_SIZE_NORMAL);
+  heightMm += settings.storeNameFontSize === 'LARGE' ? LINE_HEIGHT_MM.LARGE : LINE_HEIGHT_MM.NORMAL;
+  data.push(bodySize);
   data.push(ESC_FONT_NORMAL);
 
-  if (settings.showAddress && settings.storeAddress) data.push(textToBytes(settings.storeAddress));
-  if (settings.showPhone && settings.storePhone) data.push(textToBytes(`Tel: ${settings.storePhone}`));
+  if (settings.showAddress && settings.storeAddress) {
+    data.push(textToBytes(settings.storeAddress));
+    heightMm += bodyLineMm;
+  }
+  if (settings.showPhone && settings.storePhone) {
+    data.push(textToBytes(`Tel: ${settings.storePhone}`));
+    heightMm += bodyLineMm;
+  }
 
   data.push(textToBytes(`--- ${billTitle} ---`));
-  data.push(textToBytes(`${isTakeaway ? 'Type' : 'Table'}: ${tableName} | Date: ${new Date().toLocaleDateString()}`));
+  heightMm += bodyLineMm;
+
+  if (settings.showBillNumber && billNumber !== undefined && billNumber !== null) {
+    data.push(textToBytes(`Bill No: #${billNumber}`));
+    heightMm += bodyLineMm;
+  }
+
+  const now = new Date();
+  data.push(textToBytes(`${isTakeaway ? 'Type' : 'Table'}: ${tableName}`));
+  heightMm += bodyLineMm;
+  data.push(textToBytes(`Date: ${now.toLocaleDateString()}  Time: ${now.toLocaleTimeString()}`));
+  heightMm += bodyLineMm;
+
   data.push(textToBytes('-'.repeat(charsPerLine)));
+  heightMm += bodyLineMm;
   data.push(ESC_ALIGN_LEFT);
 
   itemsList.forEach(item => {
     const lineTotal = (item.sellingPrice * item.quantity).toFixed(0);
     data.push(textToBytes(`${item.name}`));
+    heightMm += bodyLineMm;
     data.push(ESC_ALIGN_RIGHT);
     data.push(textToBytes(`${item.quantity} x ${item.sellingPrice} = Rs.${lineTotal}`));
+    heightMm += bodyLineMm;
     data.push(ESC_ALIGN_LEFT);
   });
 
   data.push(textToBytes('-'.repeat(charsPerLine)));
+  heightMm += bodyLineMm;
   data.push(ESC_ALIGN_RIGHT);
   data.push(textToBytes(`Sub Total: Rs.${sub.toFixed(2)}`));
+  heightMm += bodyLineMm;
   data.push(textToBytes(`Service Charge: Rs.${sc.toFixed(2)}`));
-  if (disc > 0) data.push(textToBytes(`Discount: -Rs.${disc.toFixed(2)}`));
+  heightMm += bodyLineMm;
+  if (disc > 0) {
+    data.push(textToBytes(`Discount: -Rs.${disc.toFixed(2)}`));
+    heightMm += bodyLineMm;
+  }
+
+  // NET TOTAL — bold + visibly larger than the rest of the bill
   data.push(ESC_FONT_BOLD);
+  data.push(netTotalSize);
   data.push(textToBytes(`NET TOTAL: Rs.${net.toFixed(2)}`));
+  heightMm += netTotalLineMm;
+  data.push(bodySize);
   data.push(ESC_FONT_NORMAL);
+
   data.push(ESC_ALIGN_CENTER);
   data.push(textToBytes(settings.footerMessage || 'Thank You! Come Again.'));
+  heightMm += bodyLineMm;
+
+  // Small fixed developer credit line (always included, smallest size)
+  data.push(ESC_SIZE_NORMAL);
+  data.push(textToBytes(DEVELOPER_CREDIT_LINE_1));
+  data.push(textToBytes(DEVELOPER_CREDIT_LINE_2));
+  heightMm += LINE_HEIGHT_MM.NORMAL * 2;
+
+  // Pad remaining paper to reach the configured minimum bill height.
+  // This is an estimate (thermal printers don't report exact printed height back),
+  // based on typical line heights per font size — close enough in practice.
+  const minHeightMm = (settings.minBillHeightInch || 6) * 25.4;
+  if (heightMm < minHeightMm) {
+    const remainingMm = minHeightMm - heightMm;
+    const remainingDots = remainingMm * (PRINTER_DPI / 25.4);
+    data.push(...escFeedDots(remainingDots));
+  }
+
   return data;
 };

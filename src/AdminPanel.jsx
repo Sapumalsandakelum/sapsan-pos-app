@@ -13,6 +13,15 @@ import {
   DEVELOPER_CREDIT_LINE_1,
   DEVELOPER_CREDIT_LINE_2
 } from './printUtils';
+import {
+  saveBackupSnapshot,
+  listBackups,
+  getBackupByDateKey,
+  downloadBackupFile,
+  readBackupFile,
+  restoreFromBackup
+} from './backupUtils';
+import { clearSession } from './authUtils';
 
 export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   // DB Live Queries
@@ -422,8 +431,113 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   };
 
   // ==========================================
-  // 📂 CATEGORY OPERATIONALS
+  // 💾 BACKUP & RESTORE
   // ==========================================
+  const [backupList, setBackupList] = useState(() => listBackups());
+  const [isBackingUpNow, setIsBackingUpNow] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+
+  const refreshBackupList = () => setBackupList(listBackups());
+
+  const handleBackupNow = async () => {
+    setIsBackingUpNow(true);
+    try {
+      await saveBackupSnapshot();
+      refreshBackupList();
+      Swal.fire({ icon: 'success', title: 'Backup Created! 💾', toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
+    } catch (err) {
+      console.error(err);
+      Swal.fire({ icon: 'error', title: 'Backup Failed', text: err.message });
+    } finally {
+      setIsBackingUpNow(false);
+    }
+  };
+
+  const handleDownloadBackup = async (dateKey) => {
+    try {
+      const backup = dateKey ? getBackupByDateKey(dateKey) : await saveBackupSnapshot();
+      if (!backup) {
+        Swal.fire({ icon: 'error', title: 'Backup Not Found' });
+        return;
+      }
+      downloadBackupFile(backup);
+      if (!dateKey) refreshBackupList();
+    } catch (err) {
+      console.error(err);
+      Swal.fire({ icon: 'error', title: 'Download Failed', text: err.message });
+    }
+  };
+
+  const runRestore = async (backup) => {
+    setIsRestoring(true);
+    try {
+      await restoreFromBackup(backup);
+      Swal.fire({
+        icon: 'success',
+        title: 'Data Restored! ✅',
+        text: 'Everything has been restored. The app will now reload and you\'ll need to log in again.',
+        confirmButtonColor: '#4f46e5',
+        confirmButtonText: 'OK, Reload Now'
+      }).then(() => {
+        clearSession();
+        window.location.reload();
+      });
+    } catch (err) {
+      console.error(err);
+      Swal.fire({ icon: 'error', title: 'Restore Failed', text: err.message });
+    } finally {
+      setIsRestoring(false);
+    }
+  };
+
+  const handleRestoreFromDate = (dateKey) => {
+    const backup = getBackupByDateKey(dateKey);
+    if (!backup) {
+      Swal.fire({ icon: 'error', title: 'Backup Not Found' });
+      return;
+    }
+    Swal.fire({
+      title: `Restore backup from ${dateKey}?`,
+      html: `This will <b>replace everything currently in the system</b> — categories, items, orders, and all user accounts — with what's in this backup.<br/><br/><b>This cannot be undone.</b> Consider downloading a backup of today's data first.`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#ef4444',
+      confirmButtonText: 'Yes, Restore & Replace Everything',
+      cancelButtonText: 'Cancel'
+    }).then((result) => {
+      if (result.isConfirmed) runRestore(backup);
+    });
+  };
+
+  const handleRestoreFromFile = (e) => {
+    const file = e.target.files[0];
+    e.target.value = ''; // allow re-selecting the same file later
+    if (!file) return;
+
+    Swal.fire({
+      title: 'Restore from this file?',
+      html: `This will <b>replace everything currently in the system</b> with the contents of <b>${file.name}</b>.<br/><br/><b>This cannot be undone.</b>`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#ef4444',
+      confirmButtonText: 'Yes, Restore & Replace Everything',
+      cancelButtonText: 'Cancel'
+    }).then(async (result) => {
+      if (!result.isConfirmed) return;
+      setIsRestoring(true);
+      try {
+        const backup = await readBackupFile(file);
+        setIsRestoring(false);
+        await runRestore(backup);
+      } catch (err) {
+        setIsRestoring(false);
+        console.error(err);
+        Swal.fire({ icon: 'error', title: 'Restore Failed', text: err.message });
+      }
+    });
+  };
+
+
   const [catName, setCatName] = useState('');
   const [printerType, setPrinterType] = useState('KOT');
   const [editingCatId, setEditingCatId] = useState(null);
@@ -564,6 +678,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
         <button onClick={() => setActiveSubTab('PRINTERS')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'PRINTERS' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🖨️ Printer Settings</button>
         <button onClick={() => setActiveSubTab('BILL_DESIGN')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'BILL_DESIGN' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🧾 Bill Design</button>
         <button onClick={() => setActiveSubTab('PROFILE')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'PROFILE' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🧑‍💼 Profile Settings</button>
+        <button onClick={() => setActiveSubTab('BACKUP')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'BACKUP' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>💾 Backup &amp; Restore</button>
       </div>
 
       {/* Main Container Workspaces */}
@@ -1491,6 +1606,102 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
               </table>
             </div>
           </>
+        )}
+
+        {/* 💾 BACKUP & RESTORE WORKSPACE */}
+        {activeSubTab === 'BACKUP' && (
+          <div className="col-span-12 bg-white rounded-2xl border h-full flex flex-col overflow-hidden">
+            <div className="flex-1 overflow-y-auto p-4 space-y-5">
+
+              <div>
+                <h3 className="text-sm font-black text-gray-700 uppercase">💾 Backup &amp; Restore</h3>
+                <p className="text-[11px] text-gray-400 mt-0.5">
+                  Everything — categories, food items, orders, admin/cashier accounts, printer setup, and bill design — is backed up automatically once a day on this device. You can also save or restore a backup manually at any time.
+                </p>
+              </div>
+
+              {/* ── Auto Backup Status + Manual Actions ── */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="border rounded-xl p-4 bg-emerald-50 border-emerald-200">
+                  <div className="text-[11px] font-black text-emerald-700 uppercase mb-1">✅ Automatic Daily Backup</div>
+                  <div className="text-[11px] text-emerald-700">
+                    {backupList.length > 0
+                      ? <>Last backup: <b>{new Date(backupList[0].createdAt).toLocaleString()}</b></>
+                      : 'No backup has run yet — it will run automatically the next time the app is opened.'}
+                  </div>
+                  <div className="text-[10px] text-emerald-600 mt-1">Keeps the last 14 days, older ones are removed automatically.</div>
+                </div>
+                <div className="border rounded-xl p-4 bg-indigo-50 border-indigo-200 flex flex-col justify-between">
+                  <div>
+                    <div className="text-[11px] font-black text-indigo-700 uppercase mb-1">Manual Backup</div>
+                    <div className="text-[11px] text-indigo-700">Create a backup right now, or download today's data as a file to store off-device.</div>
+                  </div>
+                  <div className="flex space-x-2 mt-2">
+                    <button onClick={handleBackupNow} disabled={isBackingUpNow} className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white text-[11px] font-black py-2 rounded-lg transition">
+                      {isBackingUpNow ? '⏳ Saving...' : '📸 Backup Now'}
+                    </button>
+                    <button onClick={() => handleDownloadBackup(null)} className="flex-1 bg-white border border-indigo-300 hover:bg-indigo-100 text-indigo-700 text-[11px] font-black py-2 rounded-lg transition">
+                      📥 Download File
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Restore from a file ── */}
+              <div className="border rounded-xl p-4 bg-amber-50 border-amber-200">
+                <div className="text-[11px] font-black text-amber-700 uppercase mb-1">📤 Restore from a Backup File</div>
+                <div className="text-[11px] text-amber-700 mb-2">Upload a previously downloaded <code>.json</code> backup file to restore from it. This replaces everything currently in the system.</div>
+                <label className="inline-block bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-black px-4 py-2 rounded-lg cursor-pointer transition">
+                  📤 Choose Backup File
+                  <input type="file" accept="application/json,.json" onChange={handleRestoreFromFile} disabled={isRestoring} className="hidden" />
+                </label>
+              </div>
+
+              {/* ── List of daily auto-backups ── */}
+              <div>
+                <h4 className="text-[11px] font-black text-gray-400 uppercase mb-2">🗓️ Daily Backups on This Device ({backupList.length})</h4>
+                {backupList.length === 0 ? (
+                  <div className="text-center text-gray-400 text-xs font-bold py-8 border rounded-xl bg-gray-50">
+                    No backups yet. Tap "Backup Now" above to create your first one.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {backupList.map((b) => (
+                      <div key={b.dateKey} className="flex items-center justify-between bg-gray-50 border rounded-xl px-3 py-2.5">
+                        <div>
+                          <div className="font-black text-xs text-gray-800">{b.dateKey}</div>
+                          <div className="text-[10px] text-gray-400">
+                            {b.counts.categories} categories · {b.counts.items} items · {b.counts.orders} orders · {b.counts.admins} accounts
+                          </div>
+                          <div className="text-[9px] text-gray-300">Saved {new Date(b.createdAt).toLocaleString()}</div>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <button
+                            onClick={() => handleDownloadBackup(b.dateKey)}
+                            title="Download this backup as a file"
+                            className="text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg px-2 py-1.5 text-[11px] font-black transition"
+                          >
+                            📥
+                          </button>
+                          <button
+                            onClick={() => handleRestoreFromDate(b.dateKey)}
+                            disabled={isRestoring}
+                            className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-[11px] font-black px-3 py-1.5 rounded-lg transition disabled:opacity-50"
+                          >
+                            ♻️ Restore
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <p className="text-[10px] text-gray-400">
+                ⚠️ Backups live in this browser on this device. Clearing browser data/site data will remove them — download a file copy periodically if you want a copy that survives that.
+              </p>
+            </div>
+          </div>
         )}
 
       </div>

@@ -1,15 +1,21 @@
 // src/App.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import BillingScreen from './BillingScreen';
 import AdminPanel from './AdminPanel';
 import DashboardScreen from './DashboardScreen';
 import LoginPage from './LoginPage';
 import { getSession, clearSession } from './authUtils';
+import { runDailyBackupIfNeeded } from './backupUtils';
 import Swal from 'sweetalert2';
 
 export default function App() {
   const [session, setSession] = useState(() => getSession());
   const [currentScreen, setCurrentScreen] = useState('BILLING'); // BILLING, ADMIN, or DASHBOARD
+
+  // 💾 Runs once per app load — internally skips itself if today's backup already happened
+  useEffect(() => {
+    runDailyBackupIfNeeded();
+  }, []);
 
   // 🔐 Not logged in yet (or no accounts exist at all) — show login / first-time setup
   if (!session) {

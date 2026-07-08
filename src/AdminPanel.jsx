@@ -14,7 +14,7 @@ import {
   DEVELOPER_CREDIT_LINE_2
 } from './printUtils';
 
-export default function AdminPanel({ onBackToBilling }) {
+export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   // DB Live Queries
   const categories = useLiveQuery(() => db.categories.toArray()) || [];
   const items = useLiveQuery(() => db.items.toArray()) || [];
@@ -411,6 +411,16 @@ export default function AdminPanel({ onBackToBilling }) {
 
   const previewCharsWidth = billDesignForm.paperWidth === '58mm' ? '230px' : '300px';
 
+  // Maps NORMAL/LARGE/XLARGE/HUGE to a preview font-size in px (for the mockup only —
+  // the actual print uses real ESC/POS size commands, this is just visual approximation)
+  const PREVIEW_SIZE_PX = { NORMAL: '9px', LARGE: '12px', XLARGE: '15px', HUGE: '19px' };
+  const previewSizePx = (tier) => PREVIEW_SIZE_PX[tier] || PREVIEW_SIZE_PX.NORMAL;
+  const PREVIEW_SIZE_SEQUENCE = ['NORMAL', 'LARGE', 'XLARGE', 'HUGE'];
+  const bumpPreviewSize = (tier) => {
+    const idx = Math.min(PREVIEW_SIZE_SEQUENCE.indexOf(tier) + 1, PREVIEW_SIZE_SEQUENCE.length - 1);
+    return PREVIEW_SIZE_SEQUENCE[idx] || 'NORMAL';
+  };
+
   // ==========================================
   // 📂 CATEGORY OPERATIONALS
   // ==========================================
@@ -528,12 +538,22 @@ export default function AdminPanel({ onBackToBilling }) {
           <span className="text-2xl">⚙️</span>
           <div>
             <h1 className="text-lg font-black tracking-wide">Admin Control Panel</h1>
-            <p className="text-xs text-gray-400">POS System Administration and User Management</p>
+            <p className="text-xs text-gray-400">
+              POS System Administration and User Management
+              {currentUser && <span className="ml-1">· Logged in as <b>{currentUser.username}</b></span>}
+            </p>
           </div>
         </div>
-        <button onClick={onBackToBilling} className="bg-gray-900 hover:bg-black text-white px-4 py-2 rounded-xl font-bold text-xs transition">
-          ⬅️ Back to Counter
-        </button>
+        <div className="flex items-center space-x-2">
+          <button onClick={onBackToBilling} className="bg-gray-900 hover:bg-black text-white px-4 py-2 rounded-xl font-bold text-xs transition">
+            ⬅️ Back to Counter
+          </button>
+          {onLogout && (
+            <button onClick={onLogout} className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-4 py-2 rounded-xl font-bold text-xs transition">
+              🚪 Logout
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Tab Bar Navigation */}
@@ -1183,13 +1203,13 @@ export default function AdminPanel({ onBackToBilling }) {
                 </div>
               </div>
 
-              {/* Bill Number */}
+              {/* Order Number */}
               <div className="border-t pt-4">
                 <label className="flex items-center space-x-2 text-xs font-bold text-gray-500">
-                  <input type="checkbox" checked={billDesignForm.showBillNumber} onChange={(e) => handleBillDesignChange('showBillNumber', e.target.checked)} />
-                  <span>Print Bill No. on Bill / KOT / BOT</span>
+                  <input type="checkbox" checked={billDesignForm.showOrderNumber} onChange={(e) => handleBillDesignChange('showOrderNumber', e.target.checked)} />
+                  <span>Print Order No. on Bill / KOT / BOT</span>
                 </label>
-                <p className="text-[10px] text-gray-400 mt-1 ml-6">Uses the order's own system ID as the bill number — always unique.</p>
+                <p className="text-[10px] text-gray-400 mt-1 ml-6">Auto-resets to 1 every day — always starts fresh with the first order of the day. Printed HUGE at the top of every ticket so it's easy to spot.</p>
               </div>
 
               {/* Bill Font Sizes */}
@@ -1197,17 +1217,20 @@ export default function AdminPanel({ onBackToBilling }) {
                 <h4 className="text-[11px] font-black text-gray-400 uppercase">Bill Font Size</h4>
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">Store Name</label>
-                  <div className="flex space-x-2">
-                    <button onClick={() => handleBillDesignChange('storeNameFontSize', 'NORMAL')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.storeNameFontSize === 'NORMAL' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Normal</button>
-                    <button onClick={() => handleBillDesignChange('storeNameFontSize', 'LARGE')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.storeNameFontSize === 'LARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Large</button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => handleBillDesignChange('storeNameFontSize', 'NORMAL')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.storeNameFontSize === 'NORMAL' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Normal</button>
+                    <button onClick={() => handleBillDesignChange('storeNameFontSize', 'LARGE')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.storeNameFontSize === 'LARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Large</button>
+                    <button onClick={() => handleBillDesignChange('storeNameFontSize', 'XLARGE')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.storeNameFontSize === 'XLARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Extra Large</button>
+                    <button onClick={() => handleBillDesignChange('storeNameFontSize', 'HUGE')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.storeNameFontSize === 'HUGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Huge</button>
                   </div>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">Bill Body Text (items, totals)</label>
-                  <div className="flex space-x-2">
-                    <button onClick={() => handleBillDesignChange('billFontSize', 'NORMAL')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.billFontSize === 'NORMAL' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Normal</button>
-                    <button onClick={() => handleBillDesignChange('billFontSize', 'LARGE')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.billFontSize === 'LARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Large</button>
-                    <button onClick={() => handleBillDesignChange('billFontSize', 'XLARGE')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.billFontSize === 'XLARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Extra Large</button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => handleBillDesignChange('billFontSize', 'NORMAL')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.billFontSize === 'NORMAL' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Normal</button>
+                    <button onClick={() => handleBillDesignChange('billFontSize', 'LARGE')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.billFontSize === 'LARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Large</button>
+                    <button onClick={() => handleBillDesignChange('billFontSize', 'XLARGE')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.billFontSize === 'XLARGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Extra Large</button>
+                    <button onClick={() => handleBillDesignChange('billFontSize', 'HUGE')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.billFontSize === 'HUGE' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>Huge</button>
                   </div>
                   <p className="text-[10px] text-gray-400 mt-1"><b>NET TOTAL</b> always prints bold and one size step bigger than this, automatically.</p>
                 </div>
@@ -1218,10 +1241,13 @@ export default function AdminPanel({ onBackToBilling }) {
                 <h4 className="text-[11px] font-black text-gray-400 uppercase">🔥 KOT &amp; BOT Ticket Layout</h4>
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">Font Size</label>
-                  <div className="flex space-x-2">
-                    <button onClick={() => handleBillDesignChange('kotBotFontSize', 'NORMAL')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.kotBotFontSize === 'NORMAL' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-500'}`}>Normal</button>
-                    <button onClick={() => handleBillDesignChange('kotBotFontSize', 'LARGE')} className={`flex-1 py-2 rounded-lg font-black text-xs border ${billDesignForm.kotBotFontSize === 'LARGE' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-500'}`}>Large</button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => handleBillDesignChange('kotBotFontSize', 'NORMAL')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.kotBotFontSize === 'NORMAL' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-500'}`}>Normal</button>
+                    <button onClick={() => handleBillDesignChange('kotBotFontSize', 'LARGE')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.kotBotFontSize === 'LARGE' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-500'}`}>Large</button>
+                    <button onClick={() => handleBillDesignChange('kotBotFontSize', 'XLARGE')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.kotBotFontSize === 'XLARGE' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-500'}`}>Extra Large</button>
+                    <button onClick={() => handleBillDesignChange('kotBotFontSize', 'HUGE')} className={`py-2 rounded-lg font-black text-xs border ${billDesignForm.kotBotFontSize === 'HUGE' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-500'}`}>Huge</button>
                   </div>
+                  <p className="text-[10px] text-gray-400 mt-1">This controls the ticket title and item lines. The Order No. at the top is always printed HUGE regardless of this setting.</p>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <label className="flex items-center space-x-2 text-[11px] font-bold text-gray-500 bg-gray-50 border rounded-lg p-2">
@@ -1237,8 +1263,8 @@ export default function AdminPanel({ onBackToBilling }) {
                     <span>Show Table</span>
                   </label>
                   <label className="flex items-center space-x-2 text-[11px] font-bold text-gray-500 bg-gray-50 border rounded-lg p-2">
-                    <input type="checkbox" checked={billDesignForm.kotBotShowBillNumber} onChange={(e) => handleBillDesignChange('kotBotShowBillNumber', e.target.checked)} />
-                    <span>Show Bill No.</span>
+                    <input type="checkbox" checked={billDesignForm.kotBotShowOrderNumber} onChange={(e) => handleBillDesignChange('kotBotShowOrderNumber', e.target.checked)} />
+                    <span>Show Order No.</span>
                   </label>
                 </div>
               </div>
@@ -1277,7 +1303,7 @@ export default function AdminPanel({ onBackToBilling }) {
                       <img src={billDesignForm.logoBase64} alt="logo" className="max-w-full max-h-full object-contain" />
                     </div>
                   )}
-                  <div className="text-center font-black leading-tight" style={{ fontSize: billDesignForm.storeNameFontSize === 'LARGE' ? '15px' : '11px' }}>
+                  <div className="text-center font-black leading-tight" style={{ fontSize: previewSizePx(billDesignForm.storeNameFontSize) }}>
                     {billDesignForm.storeName || 'MY RESTAURANT'}
                   </div>
                   {billDesignForm.showAddress && billDesignForm.storeAddress && (
@@ -1287,14 +1313,14 @@ export default function AdminPanel({ onBackToBilling }) {
                     <div className="text-center text-[9px] text-gray-600">Tel: {billDesignForm.storePhone}</div>
                   )}
                   <div className="text-center text-[9px] font-bold my-1">--- FINAL INVOICE ---</div>
-                  {billDesignForm.showBillNumber && (
-                    <div className="text-[9px] text-center">Bill No: #999</div>
+                  {billDesignForm.showOrderNumber && (
+                    <div className="text-center font-black my-1" style={{ fontSize: previewSizePx('HUGE') }}>Order #999</div>
                   )}
                   <div className="text-[9px] border-t border-b border-dashed border-gray-400 py-1 my-1 flex justify-between">
                     <span>Table: Table 1</span>
                   </div>
                   <div className="text-[9px] text-center mb-1">{new Date().toLocaleDateString()} {new Date().toLocaleTimeString()}</div>
-                  <div className="text-[9px] space-y-0.5 py-1" style={{ fontSize: billDesignForm.billFontSize === 'XLARGE' ? '11px' : billDesignForm.billFontSize === 'LARGE' ? '10px' : '9px' }}>
+                  <div className="text-[9px] space-y-0.5 py-1" style={{ fontSize: previewSizePx(billDesignForm.billFontSize) }}>
                     <div className="flex justify-between"><span>Sample Item 1</span><span></span></div>
                     <div className="flex justify-between text-gray-500"><span>2 x 250</span><span>= Rs.500</span></div>
                     <div className="flex justify-between"><span>Sample Item 2</span><span></span></div>
@@ -1306,7 +1332,7 @@ export default function AdminPanel({ onBackToBilling }) {
                     <div className="flex justify-between"><span>Service Charge:</span><span>Rs.95.00</span></div>
                     <div
                       className="flex justify-between font-black border-t border-dashed pt-1 mt-1"
-                      style={{ fontSize: billDesignForm.billFontSize === 'XLARGE' ? '15px' : '13px' }}
+                      style={{ fontSize: previewSizePx(bumpPreviewSize(billDesignForm.billFontSize)) }}
                     >
                       <span>NET TOTAL:</span><span>Rs.1045.00</span>
                     </div>
@@ -1326,8 +1352,10 @@ export default function AdminPanel({ onBackToBilling }) {
                   className="bg-white shadow-md p-3"
                   style={{ width: previewCharsWidth, fontFamily: 'monospace', boxShadow: '0 2px 10px rgba(0,0,0,0.08)' }}
                 >
-                  <div className="text-center font-black" style={{ fontSize: billDesignForm.kotBotFontSize === 'LARGE' ? '13px' : '10px' }}>*** KOT (KITCHEN) ***</div>
-                  {billDesignForm.kotBotShowBillNumber && <div className="text-[9px] text-center">Bill No: #999</div>}
+                  {billDesignForm.kotBotShowOrderNumber && (
+                    <div className="text-center font-black" style={{ fontSize: previewSizePx('HUGE') }}>Order #999</div>
+                  )}
+                  <div className="text-center font-black" style={{ fontSize: previewSizePx(billDesignForm.kotBotFontSize) }}>*** KOT (KITCHEN) ***</div>
                   {billDesignForm.kotBotShowTable && <div className="text-[9px] text-center">Table: Table 1</div>}
                   {(billDesignForm.kotBotShowDate || billDesignForm.kotBotShowTime) && (
                     <div className="text-[9px] text-center">
@@ -1337,7 +1365,7 @@ export default function AdminPanel({ onBackToBilling }) {
                     </div>
                   )}
                   <div className="border-t border-dashed border-gray-400 my-1"></div>
-                  <div className="text-left space-y-0.5" style={{ fontSize: billDesignForm.kotBotFontSize === 'LARGE' ? '11px' : '9px' }}>
+                  <div className="text-left space-y-0.5" style={{ fontSize: previewSizePx(billDesignForm.kotBotFontSize) }}>
                     <div>2 x Chicken Fried Rice</div>
                     <div>1 x Iced Coffee</div>
                   </div>
@@ -1345,7 +1373,7 @@ export default function AdminPanel({ onBackToBilling }) {
                 </div>
               </div>
 
-              <p className="text-[10px] text-gray-400 text-center px-4">Previews are an approximation — actual thermal print spacing depends on your printer's firmware.</p>
+              <p className="text-[10px] text-gray-400 text-center px-4">Previews are an approximation — actual thermal print spacing depends on your printer's firmware. Order No. always prints HUGE, no matter the ticket's font size setting.</p>
             </div>
           </>
         )}

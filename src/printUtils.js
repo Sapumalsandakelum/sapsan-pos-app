@@ -1,6 +1,6 @@
 // src/printUtils.js
 // 🖨️ Shared printing engine: Bluetooth / USB / Serial thermal printer support,
-// Bill Design settings (store name, logo, paper size, bill number, min height),
+// Bill Design settings (store name, logo, paper size, order number, min height),
 // and receipt generators for Bill / KOT / BOT.
 
 import Swal from 'sweetalert2';
@@ -24,6 +24,22 @@ export const ESC_FEED_PAPER = new Uint8Array([0x1D, 0x56, 0x42, 0x03]);
 export const ESC_SIZE_NORMAL = new Uint8Array([0x1D, 0x21, 0x00]); // 1x1
 export const ESC_SIZE_LARGE = new Uint8Array([0x1D, 0x21, 0x11]);  // 2x2
 export const ESC_SIZE_XLARGE = new Uint8Array([0x1D, 0x21, 0x22]); // 3x3
+export const ESC_SIZE_HUGE = new Uint8Array([0x1D, 0x21, 0x33]);   // 4x4
+
+// Ordered smallest → biggest, used to "bump" a size up by N steps (e.g. NET TOTAL / Order No.)
+const SIZE_SEQUENCE = ['NORMAL', 'LARGE', 'XLARGE', 'HUGE'];
+const SIZE_BYTES = { NORMAL: ESC_SIZE_NORMAL, LARGE: ESC_SIZE_LARGE, XLARGE: ESC_SIZE_XLARGE, HUGE: ESC_SIZE_HUGE };
+export const sizeBytesFor = (tier) => SIZE_BYTES[tier] || ESC_SIZE_NORMAL;
+// Approximate printed line heights in mm per size tier — used only to estimate total
+// bill length so we know how much extra paper to feed to hit the minimum bill height.
+const LINE_HEIGHT_MM = { NORMAL: 3.75, LARGE: 7.5, XLARGE: 11.25, HUGE: 15 };
+
+// Returns the size tier N steps up (capped at HUGE) — used so NET TOTAL / Order No.
+// always look bigger than the body text no matter which size the body is set to.
+const bumpSizeKey = (sizeKey, steps = 1) => {
+  const idx = Math.min(SIZE_SEQUENCE.indexOf(sizeKey) + steps, SIZE_SEQUENCE.length - 1);
+  return SIZE_SEQUENCE[idx] || 'NORMAL';
+};
 
 // ESC J n — print and feed paper n dots (used to pad bills to a minimum length)
 export const escFeedDots = (dots) => {
@@ -45,9 +61,35 @@ export const LOGO_HEIGHT_INCH = 1.5;  // fixed logo box height, per spec
 export const DEVELOPER_CREDIT_LINE_1 = 'SapSan Technologies';
 export const DEVELOPER_CREDIT_LINE_2 = '0779040332';
 
-// Approximate printed line heights in mm, used only to estimate total bill length
-// so we know how much extra paper to feed to hit the minimum bill height.
-const LINE_HEIGHT_MM = { NORMAL: 3.75, LARGE: 7.5, XLARGE: 11.25 };
+// ==========================================
+// 🔢 DAILY ORDER NUMBER (resets to 1 every new day)
+// ==========================================
+const DAILY_ORDER_COUNTER_KEY = 'pos_daily_order_counter';
+
+const getTodayDateString = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+};
+
+// Call this exactly ONCE per NEW order (not on re-save/update) to assign it a permanent
+// order number for the day. The very first order of each day starts back at 1.
+export const getNextDailyOrderNumber = () => {
+  const today = getTodayDateString();
+  let counter = { date: today, lastNumber: 0 };
+  try {
+    const saved = localStorage.getItem(DAILY_ORDER_COUNTER_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed.date === today) counter = parsed; // same day — keep counting up
+      // different day (or no saved value) — counter above already starts fresh at 0
+    }
+  } catch (e) {
+    console.error('Failed to read daily order counter, restarting from 1', e);
+  }
+  counter.lastNumber += 1;
+  localStorage.setItem(DAILY_ORDER_COUNTER_KEY, JSON.stringify(counter));
+  return counter.lastNumber;
+};
 
 // ==========================================
 // 🧾 BILL DESIGN SETTINGS (localStorage-backed)
@@ -72,16 +114,16 @@ export const DEFAULT_BILL_DESIGN = {
   minBillHeightInch: 6,     // minimum printed length for Pre-Bill / Final Invoice only
 
   // Bill (customer receipt) settings
-  showBillNumber: true,
-  storeNameFontSize: 'LARGE',  // NORMAL | LARGE
-  billFontSize: 'NORMAL',      // NORMAL | LARGE | XLARGE — overall body text size
+  showOrderNumber: true,        // daily-resetting sequential order number, printed big at the top
+  storeNameFontSize: 'LARGE',   // NORMAL | LARGE | XLARGE | HUGE
+  billFontSize: 'NORMAL',       // NORMAL | LARGE | XLARGE | HUGE — overall body text size
 
   // KOT / BOT (kitchen & bar ticket) settings
-  kotBotFontSize: 'NORMAL',    // NORMAL | LARGE
+  kotBotFontSize: 'NORMAL',     // NORMAL | LARGE | XLARGE | HUGE
   kotBotShowDate: true,
   kotBotShowTime: true,
   kotBotShowTable: true,
-  kotBotShowBillNumber: true,
+  kotBotShowOrderNumber: true,
 };
 
 export const PAPER_WIDTH_CONFIG = {
@@ -304,23 +346,33 @@ export const printViaBluetooth = async (targetRole, receiptDataArray) => {
 // 🔥 RECEIPT FORMAT GENERATORS
 // ==========================================
 
-// KOT / BOT — kitchen & bar tickets. billNumber is optional (pass the DB order id).
-export const generateKitchenReceipt = (isTakeaway, tableName, typeLabel, itemsList, billNumber) => {
+// KOT / BOT — kitchen & bar tickets. orderNumber is the daily-resetting sequential
+// number (from getNextDailyOrderNumber()), printed big & bold near the top.
+export const generateKitchenReceipt = (isTakeaway, tableName, typeLabel, itemsList, orderNumber) => {
   const settings = getBillDesignSettings();
   const { charsPerLine } = PAPER_WIDTH_CONFIG[settings.paperWidth] || PAPER_WIDTH_CONFIG['80mm'];
-  const bodySize = settings.kotBotFontSize === 'LARGE' ? ESC_SIZE_LARGE : ESC_SIZE_NORMAL;
+  const bodySizeKey = settings.kotBotFontSize || 'NORMAL';
+  const bodySize = SIZE_BYTES[bodySizeKey] || ESC_SIZE_NORMAL;
 
   const data = [];
   data.push(ESC_ALIGN_CENTER);
+
+  // Order Number — the very first thing printed, HUGE & bold, so kitchen/bar staff
+  // can spot and call it out instantly. Always HUGE regardless of kotBotFontSize.
+  if (settings.kotBotShowOrderNumber && orderNumber !== undefined && orderNumber !== null) {
+    data.push(ESC_FONT_BOLD);
+    data.push(ESC_SIZE_HUGE);
+    data.push(textToBytes(`Order #${orderNumber}`));
+    data.push(ESC_SIZE_NORMAL);
+    data.push(ESC_FONT_NORMAL);
+  }
+
   data.push(ESC_FONT_BOLD);
   data.push(bodySize);
   data.push(textToBytes(`*** ${typeLabel} ***`));
   data.push(ESC_SIZE_NORMAL);
   data.push(ESC_FONT_NORMAL);
 
-  if (settings.kotBotShowBillNumber && billNumber !== undefined && billNumber !== null) {
-    data.push(textToBytes(`Bill No: #${billNumber}`));
-  }
   if (settings.kotBotShowTable) {
     data.push(textToBytes(`${isTakeaway ? 'Type' : 'Table'}: ${tableName}`));
   }
@@ -347,18 +399,74 @@ export const generateKitchenReceipt = (isTakeaway, tableName, typeLabel, itemsLi
   return data;
 };
 
+// Cancellation ticket — sent to the kitchen/bar printer when a saved item is removed
+// from an order *after* its KOT/BOT was already sent, so kitchen/bar staff know to
+// stop preparing (or discard) it. Same order number as the original KOT/BOT.
+export const generateCancellationReceipt = (isTakeaway, tableName, item, orderNumber) => {
+  const settings = getBillDesignSettings();
+  const { charsPerLine } = PAPER_WIDTH_CONFIG[settings.paperWidth] || PAPER_WIDTH_CONFIG['80mm'];
+  const bodySizeKey = settings.kotBotFontSize || 'NORMAL';
+  const bodySize = SIZE_BYTES[bodySizeKey] || ESC_SIZE_NORMAL;
+
+  const data = [];
+  data.push(ESC_ALIGN_CENTER);
+
+  // Order Number — same treatment as the original KOT/BOT: HUGE, first thing printed
+  if (settings.kotBotShowOrderNumber && orderNumber !== undefined && orderNumber !== null) {
+    data.push(ESC_FONT_BOLD);
+    data.push(ESC_SIZE_HUGE);
+    data.push(textToBytes(`Order #${orderNumber}`));
+    data.push(ESC_SIZE_NORMAL);
+    data.push(ESC_FONT_NORMAL);
+  }
+
+  data.push(ESC_FONT_BOLD);
+  data.push(ESC_SIZE_LARGE);
+  data.push(textToBytes('*** ITEM CANCELLED ***'));
+  data.push(ESC_SIZE_NORMAL);
+  data.push(ESC_FONT_NORMAL);
+
+  if (settings.kotBotShowTable) {
+    data.push(textToBytes(`${isTakeaway ? 'Type' : 'Table'}: ${tableName}`));
+  }
+
+  const now = new Date();
+  if (settings.kotBotShowDate && settings.kotBotShowTime) {
+    data.push(textToBytes(`Date: ${now.toLocaleDateString()}  Time: ${now.toLocaleTimeString()}`));
+  } else if (settings.kotBotShowDate) {
+    data.push(textToBytes(`Date: ${now.toLocaleDateString()}`));
+  } else if (settings.kotBotShowTime) {
+    data.push(textToBytes(`Time: ${now.toLocaleTimeString()}`));
+  }
+
+  data.push(textToBytes('-'.repeat(charsPerLine)));
+  data.push(ESC_ALIGN_LEFT);
+  data.push(ESC_FONT_BOLD);
+  data.push(bodySize);
+  data.push(textToBytes(`${item.quantity} x ${item.name}`));
+  data.push(ESC_SIZE_NORMAL);
+  data.push(ESC_FONT_NORMAL);
+  data.push(ESC_ALIGN_CENTER);
+  data.push(textToBytes('>> STOP / DISCARD <<'));
+  data.push(textToBytes('-'.repeat(charsPerLine)));
+  return data;
+};
+
 // Bill / Pre-Bill / Final Invoice — fully customizable via Bill Design settings.
-// billNumber is optional (pass the DB order id); omit or pass null/undefined to hide it
-// even if showBillNumber is on.
-export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, billNumber) => {
+// orderNumber is the daily-resetting sequential number (from getNextDailyOrderNumber()),
+// printed big & bold near the top; omit/null to hide it even if showOrderNumber is on.
+export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, orderNumber) => {
   const settings = getBillDesignSettings();
   const { rasterPx, charsPerLine } = PAPER_WIDTH_CONFIG[settings.paperWidth] || PAPER_WIDTH_CONFIG['80mm'];
 
-  const bodySize = settings.billFontSize === 'XLARGE' ? ESC_SIZE_XLARGE : settings.billFontSize === 'LARGE' ? ESC_SIZE_LARGE : ESC_SIZE_NORMAL;
-  const bodyLineMm = LINE_HEIGHT_MM[settings.billFontSize] || LINE_HEIGHT_MM.NORMAL;
-  // NET TOTAL is always at least one size step larger than the body text, and always bold
-  const netTotalSize = settings.billFontSize === 'XLARGE' ? ESC_SIZE_XLARGE : ESC_SIZE_LARGE;
-  const netTotalLineMm = settings.billFontSize === 'XLARGE' ? LINE_HEIGHT_MM.XLARGE : LINE_HEIGHT_MM.LARGE;
+  const bodySizeKey = settings.billFontSize || 'NORMAL';
+  const bodySize = SIZE_BYTES[bodySizeKey] || ESC_SIZE_NORMAL;
+  const bodyLineMm = LINE_HEIGHT_MM[bodySizeKey] || LINE_HEIGHT_MM.NORMAL;
+
+  // NET TOTAL is always one size step bigger than body text, and always bold
+  const netTotalSizeKey = bumpSizeKey(bodySizeKey, 1);
+  const netTotalSize = SIZE_BYTES[netTotalSizeKey];
+  const netTotalLineMm = LINE_HEIGHT_MM[netTotalSizeKey];
 
   let heightMm = 0;
   const data = [];
@@ -383,10 +491,11 @@ export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub,
 
   // Store name
   data.push(ESC_FONT_BOLD);
-  const nameSize = settings.storeNameFontSize === 'LARGE' ? ESC_SIZE_LARGE : ESC_SIZE_NORMAL;
+  const nameSizeKey = settings.storeNameFontSize || 'LARGE';
+  const nameSize = SIZE_BYTES[nameSizeKey] || ESC_SIZE_LARGE;
   data.push(nameSize);
   data.push(textToBytes(settings.storeName || 'MY RESTAURANT'));
-  heightMm += settings.storeNameFontSize === 'LARGE' ? LINE_HEIGHT_MM.LARGE : LINE_HEIGHT_MM.NORMAL;
+  heightMm += LINE_HEIGHT_MM[nameSizeKey] || LINE_HEIGHT_MM.LARGE;
   data.push(bodySize);
   data.push(ESC_FONT_NORMAL);
 
@@ -402,9 +511,14 @@ export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub,
   data.push(textToBytes(`--- ${billTitle} ---`));
   heightMm += bodyLineMm;
 
-  if (settings.showBillNumber && billNumber !== undefined && billNumber !== null) {
-    data.push(textToBytes(`Bill No: #${billNumber}`));
-    heightMm += bodyLineMm;
+  // Order Number — always printed HUGE & bold, right at the top of the bill
+  if (settings.showOrderNumber && orderNumber !== undefined && orderNumber !== null) {
+    data.push(ESC_FONT_BOLD);
+    data.push(ESC_SIZE_HUGE);
+    data.push(textToBytes(`Order #${orderNumber}`));
+    heightMm += LINE_HEIGHT_MM.HUGE;
+    data.push(bodySize);
+    data.push(ESC_FONT_NORMAL);
   }
 
   const now = new Date();

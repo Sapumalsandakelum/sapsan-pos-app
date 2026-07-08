@@ -3,9 +3,9 @@ import React, { useState, useEffect } from 'react';
 import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import Swal from 'sweetalert2';
-import { printViaBluetooth, generateKitchenReceipt, generateBillReceipt } from './printUtils';
+import { printViaBluetooth, generateKitchenReceipt, generateBillReceipt, generateCancellationReceipt, getNextDailyOrderNumber } from './printUtils';
 
-export default function BillingScreen({ isTakeaway = false }) {
+export default function BillingScreen({ isTakeaway = false, currentUser }) {
   // DB Live Queries
   const categories = useLiveQuery(() => db.categories.toArray()) || [];
   const items = useLiveQuery(() => db.items.toArray()) || [];
@@ -36,6 +36,7 @@ export default function BillingScreen({ isTakeaway = false }) {
   const [adminPassword, setAdminPassword] = useState('');
   const [adminCheckLoading, setAdminCheckLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState(null);
+  const [pendingDeleteIndex, setPendingDeleteIndex] = useState(null);
 
   // Settlement Modals
   const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
@@ -138,6 +139,87 @@ export default function BillingScreen({ isTakeaway = false }) {
     setCart(newCart); setIsSavedForTable(false); setIsPreBillPrinted(false);
   };
 
+  // 🗑️ Remove an item from the cart/table.
+  // - Not yet saved: free to remove immediately (just a confirm to avoid mis-taps).
+  // - Already saved (already sent to KOT/BOT): requires Admin authorization, and once
+  //   confirmed, sends a cancellation ticket to the kitchen/bar printer so staff know
+  //   to stop preparing / discard it.
+  const handleDeleteItemClick = (cartIndex) => {
+    const targetItem = cart[cartIndex];
+    if (!targetItem) return;
+
+    if (!targetItem.isSaved) {
+      Swal.fire({
+        title: 'Remove this item?',
+        text: `Remove "${targetItem.name}" from the order?`,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#ef4444',
+        confirmButtonText: 'Yes, Remove'
+      }).then((result) => {
+        if (result.isConfirmed) {
+          setCart(prev => prev.filter((_, idx) => idx !== cartIndex));
+        }
+      });
+      return;
+    }
+
+    setPendingDeleteIndex(cartIndex);
+    triggerAdminCheck('DELETE_ITEM');
+  };
+
+  const executeDeleteItem = async (cartIndex) => {
+    const targetItem = cart[cartIndex];
+    if (!targetItem) { setPendingDeleteIndex(null); return; }
+
+    const orderIdentifier = isTakeaway ? 'Takeaway' : selectedTable;
+    const existingOrder = activeOrders.find(o => o.tableNumber === orderIdentifier);
+    const updatedCart = cart.filter((_, idx) => idx !== cartIndex);
+
+    try {
+      if (existingOrder) {
+        const remainingSavedItems = updatedCart.filter(i => i.isSaved);
+        let newSubTotal = 0, newServiceCharge = 0;
+        remainingSavedItems.forEach(i => {
+          const lineTotal = i.sellingPrice * i.quantity;
+          newSubTotal += lineTotal;
+          if (!isTakeaway) newServiceCharge += (lineTotal * i.serviceChargePercentage) / 100;
+        });
+        const newNetTotal = newSubTotal + newServiceCharge;
+
+        if (remainingSavedItems.length === 0) {
+          // Nothing left on this order — clear it entirely
+          await db.orders.delete(existingOrder.id);
+          setIsSavedForTable(false);
+          setIsPreBillPrinted(false);
+        } else {
+          await db.orders.update(existingOrder.id, {
+            items: remainingSavedItems,
+            subTotal: newSubTotal,
+            totalServiceCharge: newServiceCharge,
+            netTotal: newNetTotal,
+            isPreBillPrinted: false // totals changed — force a fresh Pre-Bill before settling
+          });
+          setIsPreBillPrinted(false);
+        }
+
+        // 🔔 Tell the kitchen/bar to stop preparing this item
+        const cat = categories.find(c => c.id === targetItem.categoryId);
+        const cancelRole = (cat && cat.printerType === 'BOT') ? 'bot' : 'kot';
+        const cancelReceipt = generateCancellationReceipt(isTakeaway, orderIdentifier, targetItem, existingOrder.dailyOrderNumber);
+        await printViaBluetooth(cancelRole, cancelReceipt);
+      }
+
+      setCart(updatedCart);
+      setPendingDeleteIndex(null);
+      Swal.fire({ icon: 'success', title: 'Item Removed', text: `"${targetItem.name}" removed — a cancellation notice was sent to the kitchen/bar.`, toast: true, position: 'top-end', showConfirmButton: false, timer: 3000 });
+    } catch (err) {
+      console.error(err);
+      setPendingDeleteIndex(null);
+      Swal.fire({ icon: 'error', title: 'Failed to Remove Item', text: err.message });
+    }
+  };
+
   const triggerAdminCheck = (actionType) => {
     setPendingAction(actionType); setIsAdminModalOpen(true);
   };
@@ -161,6 +243,7 @@ export default function BillingScreen({ isTakeaway = false }) {
         if (pendingAction === 'RE_SAVE') executeSaveOrder();
         else if (pendingAction === 'RE_PRINT') executePrintPreBill();
         else if (pendingAction === 'CLEAR_BILL') executeClearTableBill();
+        else if (pendingAction === 'DELETE_ITEM') executeDeleteItem(pendingDeleteIndex);
       } else {
         Swal.fire({ icon: 'error', title: 'Invalid Credentials!', text: 'Username or Password is incorrect, or you do not have Admin privileges.', confirmButtonColor: '#ef4444' });
       }
@@ -206,13 +289,19 @@ export default function BillingScreen({ isTakeaway = false }) {
       const existingOrder = activeOrders.find(o => o.tableNumber === orderIdentifier);
       let currentPreBillState = isPreBillPrinted;
       let savedOrderId;
+      let orderNumber;
 
       if (existingOrder) {
         currentPreBillState = false;
+        // Re-saving an existing order — reuse its already-assigned daily order number,
+        // do NOT generate a new one (that would break the sequence).
+        orderNumber = existingOrder.dailyOrderNumber;
         await db.orders.update(existingOrder.id, { subTotal, totalServiceCharge, netTotal, isPreBillPrinted: false, items: finalItemsForDb });
         savedOrderId = existingOrder.id;
       } else {
-        savedOrderId = await db.orders.add({ orderDate: new Date(), tableNumber: orderIdentifier, subTotal, totalServiceCharge, discountAmount: 0, netTotal, paymentMethod: 'PENDING', status: 'PENDING', isPreBillPrinted: false, items: finalItemsForDb });
+        // Brand new order — assign the next number in today's sequence (auto-resets daily)
+        orderNumber = getNextDailyOrderNumber();
+        savedOrderId = await db.orders.add({ orderDate: new Date(), tableNumber: orderIdentifier, subTotal, totalServiceCharge, discountAmount: 0, netTotal, paymentMethod: 'PENDING', status: 'PENDING', isPreBillPrinted: false, items: finalItemsForDb, dailyOrderNumber: orderNumber, cashierName: currentUser?.username || 'Admin Cashier' });
         currentPreBillState = false;
       }
 
@@ -221,11 +310,11 @@ export default function BillingScreen({ isTakeaway = false }) {
       setIsPreBillPrinted(currentPreBillState);
 
       if (kotItems.length > 0) {
-        const kotReceipt = generateKitchenReceipt(isTakeaway, orderIdentifier, 'KOT (KITCHEN)', kotItems, savedOrderId);
+        const kotReceipt = generateKitchenReceipt(isTakeaway, orderIdentifier, 'KOT (KITCHEN)', kotItems, orderNumber);
         await printViaBluetooth('kot', kotReceipt);
       }
       if (botItems.length > 0) {
-        const botReceipt = generateKitchenReceipt(isTakeaway, orderIdentifier, 'BOT (BAR)', botItems, savedOrderId);
+        const botReceipt = generateKitchenReceipt(isTakeaway, orderIdentifier, 'BOT (BAR)', botItems, orderNumber);
         await printViaBluetooth('bot', botReceipt);
       }
 
@@ -261,7 +350,7 @@ export default function BillingScreen({ isTakeaway = false }) {
     }
 
     Swal.fire({ title: 'Printing Pre-Bill...', didOpen: () => Swal.showLoading(), allowOutsideClick: false, showConfirmButton: false });
-    const preBillReceipt = await generateBillReceipt(isTakeaway, orderIdentifier, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart, existingOrder ? existingOrder.id : null);
+    const preBillReceipt = await generateBillReceipt(isTakeaway, orderIdentifier, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart, existingOrder ? existingOrder.dailyOrderNumber : null);
     const printed = await printViaBluetooth('bill', preBillReceipt);
     Swal.close();
 
@@ -282,7 +371,7 @@ export default function BillingScreen({ isTakeaway = false }) {
       await db.orders.update(existingOrder.id, { discountAmount, netTotal: finalTotal, paymentMethod, status: 'SETTLED', settledDate: new Date() });
 
       Swal.fire({ title: 'Printing Final Invoice...', didOpen: () => Swal.showLoading(), allowOutsideClick: false, showConfirmButton: false });
-      const finalReceipt = await generateBillReceipt(isTakeaway, orderIdentifier, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart, existingOrder.id);
+      const finalReceipt = await generateBillReceipt(isTakeaway, orderIdentifier, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart, existingOrder.dailyOrderNumber);
       const printed = await printViaBluetooth('bill', finalReceipt);
       Swal.close();
 
@@ -412,6 +501,13 @@ export default function BillingScreen({ isTakeaway = false }) {
                   <button onClick={() => updateQuantity(index, 1)} disabled={item.isSaved} className="font-bold px-1 text-indigo-600 disabled:text-gray-300">+</button>
                 </div>
                 <div className="font-black text-right w-16 pl-2 text-gray-700">Rs.{(item.sellingPrice * item.quantity).toFixed(0)}</div>
+                <button
+                  onClick={() => handleDeleteItemClick(index)}
+                  title={item.isSaved ? 'Remove (Admin authorization required)' : 'Remove item'}
+                  className={`ml-1.5 shrink-0 rounded-lg p-1.5 text-sm transition ${item.isSaved ? 'text-amber-500 hover:bg-amber-50' : 'text-red-400 hover:bg-red-50 hover:text-red-600'}`}
+                >
+                  {item.isSaved ? '🔒' : '🗑️'}
+                </button>
               </div>
             ))
           )}
@@ -456,6 +552,14 @@ export default function BillingScreen({ isTakeaway = false }) {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
           <div className="bg-white p-5 rounded-2xl max-w-xs w-full space-y-3 text-center text-xs">
             <span className="text-3xl">🛡️</span><h3 className="text-sm font-black text-gray-800">Admin Authorization Required</h3>
+            {pendingAction === 'DELETE_ITEM' && pendingDeleteIndex !== null && cart[pendingDeleteIndex] && (
+              <p className="text-[11px] text-gray-500 -mt-1">
+                Removing <b>"{cart[pendingDeleteIndex].name}"</b> — a cancellation notice will be sent to the kitchen/bar.
+              </p>
+            )}
+            {pendingAction === 'RE_SAVE' && <p className="text-[11px] text-gray-500 -mt-1">Re-saving items already sent to the kitchen/bar.</p>}
+            {pendingAction === 'RE_PRINT' && <p className="text-[11px] text-gray-500 -mt-1">Re-printing the Pre-Bill.</p>}
+            {pendingAction === 'CLEAR_BILL' && <p className="text-[11px] text-gray-500 -mt-1">Clearing this table's entire bill.</p>}
 
             <input
               type="text"
@@ -475,7 +579,7 @@ export default function BillingScreen({ isTakeaway = false }) {
             />
 
             <div className="grid grid-cols-2 gap-2 pt-1">
-              <button onClick={() => { setIsAdminModalOpen(false); setAdminUsername(''); setAdminPassword(''); }} className="bg-gray-100 hover:bg-gray-200 py-2 rounded-xl font-bold">Cancel</button>
+              <button onClick={() => { setIsAdminModalOpen(false); setAdminUsername(''); setAdminPassword(''); setPendingDeleteIndex(null); }} className="bg-gray-100 hover:bg-gray-200 py-2 rounded-xl font-bold">Cancel</button>
               <button onClick={handleAdminVerify} disabled={adminCheckLoading} className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white py-2 rounded-xl font-bold">
                 {adminCheckLoading ? 'Checking...' : 'Verify'}
               </button>

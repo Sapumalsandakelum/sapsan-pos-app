@@ -414,7 +414,7 @@ export const generateCancellationReceipt = (isTakeaway, tableName, item, orderNu
   // Order Number — same treatment as the original KOT/BOT: HUGE, first thing printed
   if (settings.kotBotShowOrderNumber && orderNumber !== undefined && orderNumber !== null) {
     data.push(ESC_FONT_BOLD);
-    data.push(ESC_SIZE_HUGE);
+    data.push(ESC_SIZE_NORMAL);
     data.push(textToBytes(`Order #${orderNumber}`));
     data.push(ESC_SIZE_NORMAL);
     data.push(ESC_FONT_NORMAL);

@@ -1429,7 +1429,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                   )}
                   <div className="text-center text-[9px] font-bold my-1">--- FINAL INVOICE ---</div>
                   {billDesignForm.showOrderNumber && (
-                    <div className="text-center font-black my-1" style={{ fontSize: previewSizePx('HUGE') }}>Order #999</div>
+                    <div className="text-center font-black my-1" style={{ fontSize: previewSizePx('NORMAL') }}>Order #999</div>
                   )}
                   <div className="text-[9px] border-t border-b border-dashed border-gray-400 py-1 my-1 flex justify-between">
                     <span>Table: Table 1</span>

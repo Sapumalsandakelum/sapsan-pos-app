@@ -361,7 +361,7 @@ export const generateKitchenReceipt = (isTakeaway, tableName, typeLabel, itemsLi
   // can spot and call it out instantly. Always HUGE regardless of kotBotFontSize.
   if (settings.kotBotShowOrderNumber && orderNumber !== undefined && orderNumber !== null) {
     data.push(ESC_FONT_BOLD);
-    data.push(ESC_SIZE_HUGE);
+    data.push(ESC_SIZE_LARGE);
     data.push(textToBytes(`Order #${orderNumber}`));
     data.push(ESC_SIZE_NORMAL);
     data.push(ESC_FONT_NORMAL);
@@ -514,7 +514,7 @@ export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub,
   // Order Number — always printed HUGE & bold, right at the top of the bill
   if (settings.showOrderNumber && orderNumber !== undefined && orderNumber !== null) {
     data.push(ESC_FONT_BOLD);
-    data.push(ESC_SIZE_HUGE);
+    data.push(ESC_SIZE_NORMAL);
     data.push(textToBytes(`Order #${orderNumber}`));
     heightMm += LINE_HEIGHT_MM.HUGE;
     data.push(bodySize);

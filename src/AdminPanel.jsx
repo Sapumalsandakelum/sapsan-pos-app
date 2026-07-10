@@ -36,35 +36,143 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   const [activeSubTab, setActiveSubTab] = useState('CATEGORIES'); // CATEGORIES, ITEMS, REPORTS, PRINTERS, BILL_DESIGN, PROFILE
 
   // ==========================================
-  // 📊 REPORTS STATES
+  // 📊 REPORTS STATES — Advanced Report Portal
   // ==========================================
-  const [reportType, setReportType] = useState('DAILY');
+  const REPORT_GROUPS = [
+    {
+      key: 'OVERVIEW',
+      label: '📊 Sales Overview',
+      reports: [
+        { key: 'SUMMARY', label: 'Sales Summary', icon: '📋' },
+        { key: 'PAYMENT_METHOD', label: 'Payment Methods', icon: '💳' },
+      ],
+    },
+    {
+      key: 'PRODUCTS',
+      label: '📦 Products',
+      reports: [
+        { key: 'PRODUCT', label: 'Sales by Product', icon: '📦' },
+        { key: 'CATEGORY', label: 'Sales by Category', icon: '📂' },
+        { key: 'BEST_SELLING', label: 'Best Sellers', icon: '🔥' },
+      ],
+    },
+    {
+      key: 'FINANCIAL',
+      label: '💰 Financial',
+      reports: [
+        { key: 'PROFIT', label: 'Profit & Loss', icon: '📈' },
+        { key: 'DISCOUNT', label: 'Discount Tracker', icon: '📉' },
+      ],
+    },
+    {
+      key: 'OPERATIONS',
+      label: '🧑‍💼 Operations',
+      reports: [
+        { key: 'CUSTOMER', label: 'Sales by Table', icon: '🪑' },
+        { key: 'CASHIER', label: 'Sales by Cashier', icon: '🧑‍💼' },
+        { key: 'INVOICE', label: 'Invoice Log', icon: '🧾' },
+      ],
+    },
+  ];
+
+  const DATE_PRESETS = [
+    { key: 'TODAY', label: 'Today' },
+    { key: 'YESTERDAY', label: 'Yesterday' },
+    { key: 'THIS_WEEK', label: 'This Week' },
+    { key: 'THIS_MONTH', label: 'This Month' },
+    { key: 'LAST_MONTH', label: 'Last Month' },
+    { key: 'THIS_YEAR', label: 'This Year' },
+    { key: 'CUSTOM', label: 'Custom Range' },
+  ];
+
+  const [activeReportGroup, setActiveReportGroup] = useState('OVERVIEW');
+  const [reportType, setReportType] = useState('SUMMARY');
+  const [datePreset, setDatePreset] = useState('TODAY');
   const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [selectedItemFilter, setSelectedItemFilter] = useState('ALL');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('ALL');
+  const [selectedPaymentFilter, setSelectedPaymentFilter] = useState('ALL');
+  const [selectedCashierFilter, setSelectedCashierFilter] = useState('ALL');
+  const [selectedTableFilter, setSelectedTableFilter] = useState('ALL');
+  const [reportSearchTerm, setReportSearchTerm] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: null, direction: 'desc' });
 
-  // මධ්‍යගත ෆිල්ටරින් ලොජික් එක
-  const getProcessedReports = () => {
+  // Reset sort whenever the report type changes — different reports have different columns
+  useEffect(() => {
+    setSortConfig({ key: null, direction: 'desc' });
+  }, [reportType]);
+
+  const handleGroupClick = (groupKey) => {
+    setActiveReportGroup(groupKey);
+    const group = REPORT_GROUPS.find(g => g.key === groupKey);
+    if (group) setReportType(group.reports[0].key);
+  };
+
+  const currentReportMeta = REPORT_GROUPS.flatMap(g => g.reports).find(r => r.key === reportType) || { label: 'Report', icon: '📊' };
+  const dateRangeLabel = datePreset === 'CUSTOM'
+    ? `${startDate} → ${endDate}`
+    : (DATE_PRESETS.find(d => d.key === datePreset)?.label || '');
+
+  const getDateRangeFromPreset = (preset, customStart, customEnd) => {
     const now = new Date();
+    const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+    const endOfDay = (d) => { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; };
+
+    switch (preset) {
+      case 'TODAY':
+        return { start: startOfDay(now), end: endOfDay(now) };
+      case 'YESTERDAY': {
+        const y = new Date(now); y.setDate(y.getDate() - 1);
+        return { start: startOfDay(y), end: endOfDay(y) };
+      }
+      case 'THIS_WEEK': {
+        const day = now.getDay();
+        const diffToMonday = (day === 0 ? 6 : day - 1);
+        const monday = new Date(now); monday.setDate(now.getDate() - diffToMonday);
+        return { start: startOfDay(monday), end: endOfDay(now) };
+      }
+      case 'THIS_MONTH': {
+        const first = new Date(now.getFullYear(), now.getMonth(), 1);
+        return { start: startOfDay(first), end: endOfDay(now) };
+      }
+      case 'LAST_MONTH': {
+        const firstLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const lastLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+        return { start: startOfDay(firstLastMonth), end: endOfDay(lastLastMonth) };
+      }
+      case 'THIS_YEAR': {
+        const first = new Date(now.getFullYear(), 0, 1);
+        return { start: startOfDay(first), end: endOfDay(now) };
+      }
+      case 'CUSTOM':
+      default:
+        return {
+          start: customStart ? new Date(customStart + 'T00:00:00') : null,
+          end: customEnd ? new Date(customEnd + 'T23:59:59') : null,
+        };
+    }
+  };
+
+  const { start: rangeStart, end: rangeEnd } = getDateRangeFromPreset(datePreset, startDate, endDate);
+
+  // Options for the Cashier/Table filter dropdowns — built from ALL settled orders
+  // (not the filtered set) so switching filters doesn't make other options disappear
+  const uniqueCashiers = Array.from(new Set(settledOrders.map(o => o.cashierName || 'Admin Cashier'))).sort();
+  const uniqueTables = Array.from(new Set(settledOrders.map(o => o.tableNumber || 'Walk-in'))).sort();
+
+  const getProcessedReports = () => {
     return settledOrders.filter(order => {
       if (!order.settledDate) return false;
       const orderDate = new Date(order.settledDate);
 
-      if (reportType === 'DAILY') {
-        if (orderDate.toDateString() !== now.toDateString()) return false;
-      } else if (reportType === 'MONTHLY') {
-        if (orderDate.getMonth() !== now.getMonth() || orderDate.getFullYear() !== now.getFullYear()) return false;
-      } else {
-        if (startDate && new Date(startDate + 'T00:00:00') > orderDate) return false;
-        if (endDate && new Date(endDate + 'T23:59:59') < orderDate) return false;
-      }
+      if (rangeStart && rangeStart > orderDate) return false;
+      if (rangeEnd && rangeEnd < orderDate) return false;
 
       if (selectedItemFilter !== 'ALL') {
         const hasItem = order.items.some(i => i.name === selectedItemFilter);
         if (!hasItem) return false;
       }
-
       if (selectedCategoryFilter !== 'ALL') {
         const hasCategory = order.items.some(item => {
           const matchedItem = items.find(i => i.name === item.name);
@@ -72,17 +180,57 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
         });
         if (!hasCategory) return false;
       }
+      if (selectedPaymentFilter !== 'ALL' && order.paymentMethod !== selectedPaymentFilter) return false;
+      if (selectedCashierFilter !== 'ALL' && (order.cashierName || 'Admin Cashier') !== selectedCashierFilter) return false;
+      if (selectedTableFilter !== 'ALL' && (order.tableNumber || 'Walk-in') !== selectedTableFilter) return false;
+
       return true;
     });
   };
 
   const filteredOrders = getProcessedReports();
 
+  const anyFilterActive = selectedItemFilter !== 'ALL' || selectedCategoryFilter !== 'ALL' || selectedPaymentFilter !== 'ALL' || selectedCashierFilter !== 'ALL' || selectedTableFilter !== 'ALL' || reportSearchTerm.trim() !== '';
+  const clearAllFilters = () => {
+    setSelectedItemFilter('ALL');
+    setSelectedCategoryFilter('ALL');
+    setSelectedPaymentFilter('ALL');
+    setSelectedCashierFilter('ALL');
+    setSelectedTableFilter('ALL');
+    setReportSearchTerm('');
+  };
+
+  // Generic search + sort helpers applied to each report's rows
+  const applySearch = (list, getSearchableText) => {
+    const term = reportSearchTerm.trim().toLowerCase();
+    if (!term) return list;
+    return list.filter(row => getSearchableText(row).toLowerCase().includes(term));
+  };
+  const applySort = (list, defaultKey, defaultDir = 'desc') => {
+    const key = sortConfig.key || defaultKey;
+    const dir = sortConfig.key ? sortConfig.direction : defaultDir;
+    return [...list].sort((a, b) => {
+      const av = a[key], bv = b[key];
+      if (typeof av === 'string') return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+      return dir === 'asc' ? (av - bv) : (bv - av);
+    });
+  };
+  const handleSort = (key) => {
+    setSortConfig(prev => prev.key === key ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' } : { key, direction: 'desc' });
+  };
+  const sortArrow = (key) => sortConfig.key === key ? (sortConfig.direction === 'asc' ? ' ▲' : ' ▼') : '';
+  const sortableTh = (label, key, extraClass = '') => (
+    <th onClick={() => handleSort(key)} className={`p-2 cursor-pointer select-none hover:bg-gray-200 transition ${extraClass}`}>
+      {label}{sortArrow(key)}
+    </th>
+  );
+
   // METRICS COUNTERS
   let totalNetSales = 0;
   let totalDiscounts = 0;
   let totalServiceCharges = 0;
   let totalCostOfSales = 0;
+  let totalItemsSold = 0;
 
   const productSalesMap = {};
   const categorySalesMap = {};
@@ -100,13 +248,18 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     }
 
     const customerKey = order.tableNumber || 'Walk-in';
-    customerSalesMap[customerKey] = (customerSalesMap[customerKey] || 0) + order.netTotal;
+    if (!customerSalesMap[customerKey]) customerSalesMap[customerKey] = { revenue: 0, count: 0 };
+    customerSalesMap[customerKey].revenue += order.netTotal || 0;
+    customerSalesMap[customerKey].count += 1;
 
     const cashierKey = order.cashierName || 'Admin Cashier';
-    cashierSalesMap[cashierKey] = (cashierSalesMap[cashierKey] || 0) + order.netTotal;
+    if (!cashierSalesMap[cashierKey]) cashierSalesMap[cashierKey] = { revenue: 0, count: 0 };
+    cashierSalesMap[cashierKey].revenue += order.netTotal || 0;
+    cashierSalesMap[cashierKey].count += 1;
 
     order.items.forEach(item => {
       const lineTotal = item.sellingPrice * item.quantity;
+      totalItemsSold += item.quantity;
 
       const itemDbInfoForCost = items.find(i => i.name === item.name);
       const unitCost = itemDbInfoForCost && itemDbInfoForCost.costPrice ? itemDbInfoForCost.costPrice : (item.sellingPrice * 0.6);
@@ -129,26 +282,34 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
   const totalCalculatedProfit = totalNetSales - totalCostOfSales;
   const profitMarginPercent = totalNetSales > 0 ? (totalCalculatedProfit / totalNetSales) * 100 : 0;
-  const bestSellersList = Object.entries(productSalesMap).map(([name, data]) => ({ name, ...data })).sort((a, b) => b.qty - a.qty);
 
   const totalOrdersCount = filteredOrders.length;
   const avgOrderValue = totalOrdersCount > 0 ? totalNetSales / totalOrdersCount : 0;
 
-  const productSalesList = Object.entries(productSalesMap)
-    .map(([name, data]) => ({ name, ...data }))
-    .sort((a, b) => b.revenue - a.revenue);
+  const productSalesList = applySort(
+    applySearch(Object.entries(productSalesMap).map(([name, data]) => ({ name, ...data })), (p) => p.name),
+    'revenue'
+  );
 
-  const categorySalesList = Object.entries(categorySalesMap)
-    .map(([name, revenue]) => ({ name, revenue }))
-    .sort((a, b) => b.revenue - a.revenue);
+  const bestSellersList = applySort(
+    applySearch(Object.entries(productSalesMap).map(([name, data]) => ({ name, ...data })), (p) => p.name),
+    'qty'
+  );
 
-  const customerSalesList = Object.entries(customerSalesMap)
-    .map(([name, revenue]) => ({ name, revenue }))
-    .sort((a, b) => b.revenue - a.revenue);
+  const categorySalesList = applySort(
+    applySearch(Object.entries(categorySalesMap).map(([name, revenue]) => ({ name, revenue })), (c) => c.name),
+    'revenue'
+  );
 
-  const cashierSalesList = Object.entries(cashierSalesMap)
-    .map(([name, revenue]) => ({ name, revenue }))
-    .sort((a, b) => b.revenue - a.revenue);
+  const customerSalesList = applySort(
+    applySearch(Object.entries(customerSalesMap).map(([name, d]) => ({ name, ...d })), (c) => c.name),
+    'revenue'
+  );
+
+  const cashierSalesList = applySort(
+    applySearch(Object.entries(cashierSalesMap).map(([name, d]) => ({ name, ...d })), (c) => c.name),
+    'revenue'
+  );
 
   const paymentMethodTotal = Object.values(paymentMethodMap).reduce((a, b) => a + b, 0) || 1;
   const paymentMethodList = Object.entries(paymentMethodMap).map(([method, amount]) => ({
@@ -157,11 +318,89 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     percent: (amount / paymentMethodTotal) * 100
   }));
 
-  const discountedOrdersList = filteredOrders
-    .filter(o => (o.discountAmount || 0) > 0)
-    .sort((a, b) => (b.discountAmount || 0) - (a.discountAmount || 0));
+  const discountedOrdersList = applySort(
+    applySearch(
+      filteredOrders.filter(o => (o.discountAmount || 0) > 0),
+      (o) => `${o.tableNumber || 'Walk-in'} ${o.cashierName || ''} ${o.paymentMethod || ''}`
+    ),
+    'discountAmount'
+  );
 
-  const sortedInvoiceList = [...filteredOrders].sort((a, b) => new Date(b.settledDate) - new Date(a.settledDate));
+  const sortedInvoiceList = applySort(
+    applySearch(
+      [...filteredOrders],
+      (o) => `${o.tableNumber || 'Walk-in'} ${o.cashierName || ''} ${o.paymentMethod || ''} ${o.dailyOrderNumber || ''}`
+    ),
+    'settledDate'
+  );
+
+  // ==========================================
+  // 📤 CSV EXPORT
+  // ==========================================
+  const escapeCsvValue = (val) => {
+    const str = String(val ?? '');
+    return (str.includes(',') || str.includes('"') || str.includes('\n')) ? `"${str.replace(/"/g, '""')}"` : str;
+  };
+  const downloadCsv = (filename, headers, rows) => {
+    const lines = [headers.join(','), ...rows.map(row => row.map(escapeCsvValue).join(','))];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportCsv = () => {
+    const dateStr = new Date().toISOString().split('T')[0];
+    const filename = `${reportType.toLowerCase()}-report-${dateStr}.csv`;
+    let headers = [];
+    let rows = [];
+
+    if (reportType === 'SUMMARY' || reportType === 'INVOICE') {
+      headers = ['Date/Time', 'Bill No', 'Table', 'Cashier', 'Payment', 'Items', 'Discount', 'Net Total'];
+      rows = sortedInvoiceList.map(o => [
+        o.settledDate ? new Date(o.settledDate).toLocaleString() : '-',
+        o.dailyOrderNumber ?? '',
+        o.tableNumber || 'Walk-in',
+        o.cashierName || 'Admin Cashier',
+        o.paymentMethod || '',
+        (o.items || []).map(it => `${it.name} x${it.quantity}`).join('; '),
+        (o.discountAmount || 0).toFixed(2),
+        (o.netTotal || 0).toFixed(2),
+      ]);
+    } else if (reportType === 'PRODUCT' || reportType === 'PROFIT') {
+      headers = ['Item', 'Qty Sold', 'Revenue', '% of Sales'];
+      rows = productSalesList.map(p => [p.name, p.qty, p.revenue.toFixed(2), totalNetSales > 0 ? ((p.revenue / totalNetSales) * 100).toFixed(1) : '0.0']);
+    } else if (reportType === 'CATEGORY') {
+      headers = ['Category', 'Revenue', '% of Sales'];
+      rows = categorySalesList.map(c => [c.name, c.revenue.toFixed(2), totalNetSales > 0 ? ((c.revenue / totalNetSales) * 100).toFixed(1) : '0.0']);
+    } else if (reportType === 'BEST_SELLING') {
+      headers = ['Rank', 'Item', 'Qty Sold', 'Revenue'];
+      rows = bestSellersList.map((p, i) => [i + 1, p.name, p.qty, p.revenue.toFixed(2)]);
+    } else if (reportType === 'CUSTOMER') {
+      headers = ['Table', 'Orders', 'Revenue'];
+      rows = customerSalesList.map(c => [c.name, c.count, c.revenue.toFixed(2)]);
+    } else if (reportType === 'CASHIER') {
+      headers = ['Cashier', 'Orders', 'Revenue'];
+      rows = cashierSalesList.map(c => [c.name, c.count, c.revenue.toFixed(2)]);
+    } else if (reportType === 'PAYMENT_METHOD') {
+      headers = ['Method', 'Amount', '% of Sales'];
+      rows = paymentMethodList.map(p => [p.method, p.amount.toFixed(2), p.percent.toFixed(1)]);
+    } else if (reportType === 'DISCOUNT') {
+      headers = ['Date', 'Table', 'Discount', 'Net Total'];
+      rows = discountedOrdersList.map(o => [o.settledDate ? new Date(o.settledDate).toLocaleString() : '-', o.tableNumber || 'Walk-in', (o.discountAmount || 0).toFixed(2), (o.netTotal || 0).toFixed(2)]);
+    }
+
+    if (rows.length === 0) {
+      Swal.fire({ icon: 'info', title: 'Nothing to Export', text: 'There is no data in the current report to export.' });
+      return;
+    }
+    downloadCsv(filename, headers, rows);
+  };
 
   // ==========================================
   // 🖨️ PRINTER CONFIG (Bluetooth + USB + Serial)
@@ -433,17 +672,30 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   // ==========================================
   // 💾 BACKUP & RESTORE
   // ==========================================
-  const [backupList, setBackupList] = useState(() => listBackups());
+  const [backupList, setBackupList] = useState([]);
   const [isBackingUpNow, setIsBackingUpNow] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
+  const [isLoadingBackups, setIsLoadingBackups] = useState(true);
 
-  const refreshBackupList = () => setBackupList(listBackups());
+  const refreshBackupList = async () => {
+    setIsLoadingBackups(true);
+    try {
+      const list = await listBackups();
+      setBackupList(list);
+    } finally {
+      setIsLoadingBackups(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshBackupList();
+  }, []);
 
   const handleBackupNow = async () => {
     setIsBackingUpNow(true);
     try {
       await saveBackupSnapshot();
-      refreshBackupList();
+      await refreshBackupList();
       Swal.fire({ icon: 'success', title: 'Backup Created! 💾', toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
     } catch (err) {
       console.error(err);
@@ -455,7 +707,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
   const handleDownloadBackup = async (dateKey) => {
     try {
-      const backup = dateKey ? getBackupByDateKey(dateKey) : await saveBackupSnapshot();
+      const backup = dateKey ? await getBackupByDateKey(dateKey) : await saveBackupSnapshot();
       if (!backup) {
         Swal.fire({ icon: 'error', title: 'Backup Not Found' });
         return;
@@ -490,8 +742,8 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     }
   };
 
-  const handleRestoreFromDate = (dateKey) => {
-    const backup = getBackupByDateKey(dateKey);
+  const handleRestoreFromDate = async (dateKey) => {
+    const backup = await getBackupByDateKey(dateKey);
     if (!backup) {
       Swal.fire({ icon: 'error', title: 'Backup Not Found' });
       return;
@@ -797,71 +1049,127 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
           </>
         )}
 
-        {/* REPORTS WORKSPACE */}
+        {/* REPORTS WORKSPACE — Advanced Report Portal */}
         {activeSubTab === 'REPORTS' && (
           <div className="col-span-12 bg-white p-4 rounded-2xl border h-full flex flex-col overflow-hidden">
 
-            {/* 🔍 FILTER BAR */}
-            <div className="bg-gray-50 p-3 rounded-xl border mb-3 grid grid-cols-2 sm:grid-cols-12 gap-2 text-xs items-end shrink-0">
-              <div className="col-span-2 sm:col-span-3">
-                <label className="block font-black text-gray-500 mb-0.5">📋 Report Type</label>
-                <select value={reportType} onChange={(e) => setReportType(e.target.value)} className="w-full p-2 border rounded-lg font-black bg-white text-indigo-700 border-indigo-200">
-                  <option value="DAILY">☀️ Daily Sales Summary</option>
-                  <option value="MONTHLY">📅 Monthly Sales Summary</option>
-                  <option value="PRODUCT">📦 Sales by Product</option>
-                  <option value="CATEGORY">📂 Sales by Category</option>
-                  <option value="BEST_SELLING">🔥 Best Selling Products</option>
-                  <option value="CUSTOMER">🪑 Sales by Table</option>
-                  <option value="CASHIER">🧑‍💼 Sales by Cashier</option>
-                  <option value="PAYMENT_METHOD">💳 Payment Method Breakdown</option>
-                  <option value="PROFIT">📈 Profit &amp; Loss</option>
-                  <option value="DISCOUNT">📉 Discount Tracker</option>
-                  <option value="INVOICE">🧾 Detailed Invoice Log</option>
-                </select>
-              </div>
+            {/* 🖨️ Print-only header (hidden on screen, shown when printing) */}
+            <div className="hidden print:block mb-4">
+              <h1 className="text-lg font-black">{getBillDesignSettings().storeName || 'Restaurant'}</h1>
+              <p className="text-sm font-bold">{currentReportMeta.icon} {currentReportMeta.label} — {dateRangeLabel}</p>
+              <p className="text-xs text-gray-500">Generated {new Date().toLocaleString()}</p>
+            </div>
 
-              {reportType !== 'DAILY' && reportType !== 'MONTHLY' && (
-                <>
-                  <div className="col-span-1 sm:col-span-2">
-                    <label className="block font-bold text-gray-400">Start Date</label>
-                    <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold" />
-                  </div>
-                  <div className="col-span-1 sm:col-span-2">
-                    <label className="block font-bold text-gray-400">End Date</label>
-                    <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold" />
-                  </div>
-                </>
-              )}
-
-              <div className="col-span-1 sm:col-span-2">
-                <label className="block font-bold text-gray-400">Item</label>
-                <select value={selectedItemFilter} onChange={(e) => setSelectedItemFilter(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold bg-white">
-                  <option value="ALL">All Items</option>
-                  {items.map(i => <option key={i.id} value={i.name}>{i.name}</option>)}
-                </select>
-              </div>
-              <div className="col-span-1 sm:col-span-2">
-                <label className="block font-bold text-gray-400">Category</label>
-                <select value={selectedCategoryFilter} onChange={(e) => setSelectedCategoryFilter(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold bg-white">
-                  <option value="ALL">All Categories</option>
-                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </div>
-
-              {(selectedItemFilter !== 'ALL' || selectedCategoryFilter !== 'ALL') && (
-                <div className="col-span-2 sm:col-span-1 flex">
+            {/* 🗂️ REPORT GROUP + TYPE SELECTOR */}
+            <div className="shrink-0 mb-3 print:hidden">
+              <div className="flex space-x-2 overflow-x-auto pb-2 scrollbar-none">
+                {REPORT_GROUPS.map(g => (
                   <button
-                    onClick={() => { setSelectedItemFilter('ALL'); setSelectedCategoryFilter('ALL'); }}
-                    className="w-full bg-gray-200 hover:bg-gray-300 text-gray-700 p-2 rounded-lg font-black text-[10px]"
+                    key={g.key}
+                    onClick={() => handleGroupClick(g.key)}
+                    className={`px-3 py-1.5 rounded-lg font-black text-[11px] whitespace-nowrap transition ${activeReportGroup === g.key ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
                   >
-                    ✕ Clear
+                    {g.label}
                   </button>
+                ))}
+              </div>
+              <div className="flex space-x-2 overflow-x-auto pt-2 scrollbar-none">
+                {(REPORT_GROUPS.find(g => g.key === activeReportGroup)?.reports || []).map(r => (
+                  <button
+                    key={r.key}
+                    onClick={() => setReportType(r.key)}
+                    className={`px-3 py-2 rounded-xl font-black text-xs whitespace-nowrap transition border ${reportType === r.key ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}
+                  >
+                    {r.icon} {r.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 🔍 FILTER BAR */}
+            <div className="bg-gray-50 p-3 rounded-xl border mb-3 shrink-0 print:hidden space-y-2">
+              {/* Date presets */}
+              <div className="flex flex-wrap gap-1.5 items-center">
+                <span className="text-[10px] font-black text-gray-400 uppercase mr-1">📅 Range:</span>
+                {DATE_PRESETS.map(dp => (
+                  <button
+                    key={dp.key}
+                    onClick={() => setDatePreset(dp.key)}
+                    className={`px-2.5 py-1 rounded-lg font-bold text-[10px] transition ${datePreset === dp.key ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-500 hover:bg-gray-100'}`}
+                  >
+                    {dp.label}
+                  </button>
+                ))}
+                {datePreset === 'CUSTOM' && (
+                  <>
+                    <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="p-1.5 border rounded-lg font-bold text-[11px]" />
+                    <span className="text-gray-400 text-[10px]">to</span>
+                    <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="p-1.5 border rounded-lg font-bold text-[11px]" />
+                  </>
+                )}
+              </div>
+
+              {/* Filters + search */}
+              <div className="grid grid-cols-2 sm:grid-cols-12 gap-2 text-xs items-end">
+                <div className="col-span-1 sm:col-span-2">
+                  <label className="block font-bold text-gray-400">Item</label>
+                  <select value={selectedItemFilter} onChange={(e) => setSelectedItemFilter(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold bg-white">
+                    <option value="ALL">All Items</option>
+                    {items.map(i => <option key={i.id} value={i.name}>{i.name}</option>)}
+                  </select>
                 </div>
-              )}
+                <div className="col-span-1 sm:col-span-2">
+                  <label className="block font-bold text-gray-400">Category</label>
+                  <select value={selectedCategoryFilter} onChange={(e) => setSelectedCategoryFilter(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold bg-white">
+                    <option value="ALL">All Categories</option>
+                    {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div className="col-span-1 sm:col-span-2">
+                  <label className="block font-bold text-gray-400">Payment</label>
+                  <select value={selectedPaymentFilter} onChange={(e) => setSelectedPaymentFilter(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold bg-white">
+                    <option value="ALL">All Methods</option>
+                    <option value="CASH">💵 Cash</option>
+                    <option value="CARD">💳 Card</option>
+                    <option value="TRANSFER">🏦 Transfer</option>
+                  </select>
+                </div>
+                <div className="col-span-1 sm:col-span-2">
+                  <label className="block font-bold text-gray-400">Cashier</label>
+                  <select value={selectedCashierFilter} onChange={(e) => setSelectedCashierFilter(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold bg-white">
+                    <option value="ALL">All Cashiers</option>
+                    {uniqueCashiers.map(name => <option key={name} value={name}>{name}</option>)}
+                  </select>
+                </div>
+                <div className="col-span-1 sm:col-span-2">
+                  <label className="block font-bold text-gray-400">Table</label>
+                  <select value={selectedTableFilter} onChange={(e) => setSelectedTableFilter(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold bg-white">
+                    <option value="ALL">All Tables</option>
+                    {uniqueTables.map(name => <option key={name} value={name}>{name}</option>)}
+                  </select>
+                </div>
+                <div className="col-span-2 sm:col-span-2">
+                  <label className="block font-bold text-gray-400">🔎 Search</label>
+                  <input
+                    type="text"
+                    value={reportSearchTerm}
+                    onChange={(e) => setReportSearchTerm(e.target.value)}
+                    placeholder="Search results..."
+                    className="w-full p-1.5 border rounded-lg font-bold bg-white"
+                  />
+                </div>
+                {anyFilterActive && (
+                  <div className="col-span-2 sm:col-span-12 flex justify-end">
+                    <button onClick={clearAllFilters} className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1.5 rounded-lg font-black text-[10px]">
+                      ✕ Clear All Filters
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* 📊 KPI SUMMARY CARDS */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-3 shrink-0">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 mb-3 shrink-0">
               <div className="bg-gray-900 text-white p-3 rounded-xl border">
                 <span className="text-[9px] text-gray-400 uppercase font-black">Net Revenue</span>
                 <div className="text-base font-black text-emerald-400">Rs.{totalNetSales.toFixed(2)}</div>
@@ -869,6 +1177,10 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
               <div className="bg-white p-3 rounded-xl border">
                 <span className="text-[9px] text-gray-400 uppercase font-black">Total Orders</span>
                 <div className="text-base font-black text-gray-800">{totalOrdersCount}</div>
+              </div>
+              <div className="bg-white p-3 rounded-xl border">
+                <span className="text-[9px] text-gray-400 uppercase font-black">Items Sold</span>
+                <div className="text-base font-black text-gray-800">{totalItemsSold}</div>
               </div>
               <div className="bg-white p-3 rounded-xl border">
                 <span className="text-[9px] text-gray-400 uppercase font-black">Avg. Order Value</span>
@@ -890,9 +1202,17 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
             {/* 📄 REPORT OUTPUT */}
             <div className="flex-1 overflow-y-auto border rounded-xl bg-gray-50 flex flex-col">
-              <div className="bg-white p-3 border-b font-black text-xs text-indigo-700 uppercase flex justify-between items-center shrink-0">
-                <span>📊 Report Output</span>
-                <span className="text-gray-400 font-bold normal-case">{totalOrdersCount} record(s) found</span>
+              <div className="bg-white p-3 border-b font-black text-xs text-indigo-700 uppercase flex justify-between items-center shrink-0 print:hidden">
+                <span>{currentReportMeta.icon} {currentReportMeta.label} <span className="text-gray-400 font-bold normal-case ml-1">· {dateRangeLabel}</span></span>
+                <div className="flex items-center space-x-2">
+                  <span className="text-gray-400 font-bold normal-case">{totalOrdersCount} record(s)</span>
+                  <button onClick={handleExportCsv} className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-lg font-black text-[10px] transition">
+                    ⬇️ CSV
+                  </button>
+                  <button onClick={() => window.print()} className="bg-gray-50 hover:bg-gray-100 text-gray-600 border border-gray-200 px-2.5 py-1 rounded-lg font-black text-[10px] transition">
+                    🖨️ Print
+                  </button>
+                </div>
               </div>
 
               <div className="flex-1 overflow-y-auto text-xs bg-white p-2">
@@ -901,14 +1221,26 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                   <div className="text-center text-gray-400 font-bold py-12">No data available for the selected filters.</div>
                 )}
 
-                {filteredOrders.length > 0 && (reportType === 'DAILY' || reportType === 'MONTHLY') && (
+                {/* SALES SUMMARY (replaces old Daily/Monthly — now driven by date presets above) */}
+                {filteredOrders.length > 0 && reportType === 'SUMMARY' && (
                   <table className="w-full text-left">
-                    <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">Date / Time</th><th className="p-2">Table</th><th className="p-2">Payment</th><th className="p-2 text-right">Net Total</th></tr></thead>
+                    <thead>
+                      <tr className="bg-gray-100 sticky top-0">
+                        {sortableTh('Date / Time', 'settledDate')}
+                        <th className="p-2">Bill No</th>
+                        <th className="p-2">Table</th>
+                        <th className="p-2">Cashier</th>
+                        <th className="p-2">Payment</th>
+                        {sortableTh('Net Total', 'netTotal', 'text-right')}
+                      </tr>
+                    </thead>
                     <tbody>
                       {sortedInvoiceList.map((o, i) => (
                         <tr key={i} className="border-b hover:bg-gray-50">
                           <td className="p-2">{o.settledDate ? new Date(o.settledDate).toLocaleString() : '-'}</td>
+                          <td className="p-2 text-gray-500">{o.dailyOrderNumber != null ? `#${o.dailyOrderNumber}` : '-'}</td>
                           <td className="p-2 font-bold">{o.tableNumber || 'Walk-in'}</td>
+                          <td className="p-2">{o.cashierName || 'Admin Cashier'}</td>
                           <td className="p-2">{o.paymentMethod || '-'}</td>
                           <td className="p-2 text-right font-bold text-emerald-600">Rs.{(o.netTotal || 0).toFixed(2)}</td>
                         </tr>
@@ -919,7 +1251,14 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
                 {filteredOrders.length > 0 && reportType === 'PRODUCT' && (
                   <table className="w-full text-left">
-                    <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">Item</th><th className="p-2 text-right">Qty Sold</th><th className="p-2 text-right">Revenue</th><th className="p-2 text-right">% of Sales</th></tr></thead>
+                    <thead>
+                      <tr className="bg-gray-100 sticky top-0">
+                        {sortableTh('Item', 'name')}
+                        {sortableTh('Qty Sold', 'qty', 'text-right')}
+                        {sortableTh('Revenue', 'revenue', 'text-right')}
+                        <th className="p-2 text-right">% of Sales</th>
+                      </tr>
+                    </thead>
                     <tbody>
                       {productSalesList.map((p, i) => (
                         <tr key={i} className="border-b hover:bg-gray-50">
@@ -935,7 +1274,13 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
                 {filteredOrders.length > 0 && reportType === 'CATEGORY' && (
                   <table className="w-full text-left">
-                    <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">Category</th><th className="p-2 text-right">Revenue</th><th className="p-2 text-right">% of Sales</th></tr></thead>
+                    <thead>
+                      <tr className="bg-gray-100 sticky top-0">
+                        {sortableTh('Category', 'name')}
+                        {sortableTh('Revenue', 'revenue', 'text-right')}
+                        <th className="p-2 text-right">% of Sales</th>
+                      </tr>
+                    </thead>
                     <tbody>
                       {categorySalesList.map((c, i) => (
                         <tr key={i} className="border-b hover:bg-gray-50">
@@ -950,7 +1295,14 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
                 {filteredOrders.length > 0 && reportType === 'BEST_SELLING' && (
                   <table className="w-full text-left">
-                    <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">#</th><th className="p-2">Item</th><th className="p-2 text-right">Qty Sold</th><th className="p-2 text-right">Revenue</th></tr></thead>
+                    <thead>
+                      <tr className="bg-gray-100 sticky top-0">
+                        <th className="p-2">#</th>
+                        {sortableTh('Item', 'name')}
+                        {sortableTh('Qty Sold', 'qty', 'text-right')}
+                        {sortableTh('Revenue', 'revenue', 'text-right')}
+                      </tr>
+                    </thead>
                     <tbody>
                       {bestSellersList.map((p, i) => (
                         <tr key={i} className="border-b hover:bg-gray-50">
@@ -966,12 +1318,18 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
                 {filteredOrders.length > 0 && reportType === 'CUSTOMER' && (
                   <table className="w-full text-left">
-                    <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">Table / Customer</th><th className="p-2 text-right">Orders</th><th className="p-2 text-right">Revenue</th></tr></thead>
+                    <thead>
+                      <tr className="bg-gray-100 sticky top-0">
+                        {sortableTh('Table / Customer', 'name')}
+                        {sortableTh('Orders', 'count', 'text-right')}
+                        {sortableTh('Revenue', 'revenue', 'text-right')}
+                      </tr>
+                    </thead>
                     <tbody>
                       {customerSalesList.map((c, i) => (
                         <tr key={i} className="border-b hover:bg-gray-50">
                           <td className="p-2 font-bold">🪑 {c.name}</td>
-                          <td className="p-2 text-right">{filteredOrders.filter(o => (o.tableNumber || 'Walk-in') === c.name).length}</td>
+                          <td className="p-2 text-right">{c.count}</td>
                           <td className="p-2 text-right font-bold text-emerald-600">Rs.{c.revenue.toFixed(2)}</td>
                         </tr>
                       ))}
@@ -981,12 +1339,18 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
                 {filteredOrders.length > 0 && reportType === 'CASHIER' && (
                   <table className="w-full text-left">
-                    <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">Cashier</th><th className="p-2 text-right">Orders</th><th className="p-2 text-right">Revenue</th></tr></thead>
+                    <thead>
+                      <tr className="bg-gray-100 sticky top-0">
+                        {sortableTh('Cashier', 'name')}
+                        {sortableTh('Orders', 'count', 'text-right')}
+                        {sortableTh('Revenue', 'revenue', 'text-right')}
+                      </tr>
+                    </thead>
                     <tbody>
                       {cashierSalesList.map((c, i) => (
                         <tr key={i} className="border-b hover:bg-gray-50">
                           <td className="p-2 font-bold">🧑‍💼 {c.name}</td>
-                          <td className="p-2 text-right">{filteredOrders.filter(o => (o.cashierName || 'Admin Cashier') === c.name).length}</td>
+                          <td className="p-2 text-right">{c.count}</td>
                           <td className="p-2 text-right font-bold text-emerald-600">Rs.{c.revenue.toFixed(2)}</td>
                         </tr>
                       ))}
@@ -1022,7 +1386,13 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                     </table>
                     <div className="font-black text-gray-500 uppercase text-[11px] pt-1">Profit Breakdown by Item</div>
                     <table className="w-full text-left">
-                      <thead><tr className="bg-gray-100"><th className="p-2">Item</th><th className="p-2 text-right">Qty</th><th className="p-2 text-right">Revenue</th></tr></thead>
+                      <thead>
+                        <tr className="bg-gray-100">
+                          {sortableTh('Item', 'name')}
+                          {sortableTh('Qty', 'qty', 'text-right')}
+                          {sortableTh('Revenue', 'revenue', 'text-right')}
+                        </tr>
+                      </thead>
                       <tbody>
                         {productSalesList.map((p, i) => (
                           <tr key={i} className="border-b"><td className="p-2 font-bold">{p.name}</td><td className="p-2 text-right">{p.qty}</td><td className="p-2 text-right font-bold text-emerald-600">Rs.{p.revenue.toFixed(2)}</td></tr>
@@ -1034,10 +1404,17 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
                 {reportType === 'DISCOUNT' && (
                   discountedOrdersList.length === 0 ? (
-                    <div className="text-center text-gray-400 font-bold py-12">No discounted orders found in this range.</div>
+                    <div className="text-center text-gray-400 font-bold py-12">No discounted orders found for the selected filters.</div>
                   ) : (
                     <table className="w-full text-left">
-                      <thead><tr className="bg-gray-100 sticky top-0"><th className="p-2">Date</th><th className="p-2">Table</th><th className="p-2 text-right">Discount</th><th className="p-2 text-right">Net Total</th></tr></thead>
+                      <thead>
+                        <tr className="bg-gray-100 sticky top-0">
+                          {sortableTh('Date', 'settledDate')}
+                          <th className="p-2">Table</th>
+                          {sortableTh('Discount', 'discountAmount', 'text-right')}
+                          {sortableTh('Net Total', 'netTotal', 'text-right')}
+                        </tr>
+                      </thead>
                       <tbody>
                         {discountedOrdersList.map((o, i) => (
                           <tr key={i} className="border-b hover:bg-gray-50">
@@ -1057,7 +1434,10 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                     {sortedInvoiceList.map((o, i) => (
                       <div key={i} className="border rounded-lg p-2">
                         <div className="flex justify-between items-center mb-1">
-                          <span className="font-black text-gray-700">🧾 {o.tableNumber || 'Walk-in'} <span className="text-gray-400 font-bold">· {o.settledDate ? new Date(o.settledDate).toLocaleString() : '-'}</span></span>
+                          <span className="font-black text-gray-700">
+                            🧾 {o.tableNumber || 'Walk-in'} {o.dailyOrderNumber != null && <span className="text-indigo-500">· #{o.dailyOrderNumber}</span>}
+                            <span className="text-gray-400 font-bold"> · {o.settledDate ? new Date(o.settledDate).toLocaleString() : '-'}</span>
+                          </span>
                           <span className="font-black text-emerald-600">Rs.{(o.netTotal || 0).toFixed(2)}</span>
                         </div>
                         <div className="text-[11px] text-gray-500">
@@ -1066,7 +1446,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                           ))}
                         </div>
                         <div className="text-[10px] text-gray-400 mt-1 flex justify-between">
-                          <span>Payment: {o.paymentMethod || '-'}</span>
+                          <span>Cashier: {o.cashierName || 'Admin Cashier'} · Payment: {o.paymentMethod || '-'}</span>
                           {(o.discountAmount || 0) > 0 && <span className="text-red-400">Discount: Rs.{o.discountAmount.toFixed(2)}</span>}
                         </div>
                       </div>
@@ -1468,7 +1848,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                   style={{ width: previewCharsWidth, fontFamily: 'monospace', boxShadow: '0 2px 10px rgba(0,0,0,0.08)' }}
                 >
                   {billDesignForm.kotBotShowOrderNumber && (
-                    <div className="text-center font-black" style={{ fontSize: previewSizePx('HUGE') }}>Order #999</div>
+                    <div className="text-center font-black" style={{ fontSize: previewSizePx('LARGE') }}>Order #999</div>
                   )}
                   <div className="text-center font-black" style={{ fontSize: previewSizePx(billDesignForm.kotBotFontSize) }}>*** KOT (KITCHEN) ***</div>
                   {billDesignForm.kotBotShowTable && <div className="text-[9px] text-center">Table: Table 1</div>}
@@ -1629,7 +2009,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                       ? <>Last backup: <b>{new Date(backupList[0].createdAt).toLocaleString()}</b></>
                       : 'No backup has run yet — it will run automatically the next time the app is opened.'}
                   </div>
-                  <div className="text-[10px] text-emerald-600 mt-1">Keeps the last 14 days, older ones are removed automatically.</div>
+                  <div className="text-[10px] text-emerald-600 mt-1">Keeps a full year (365 days) of daily backups, older ones are removed automatically.</div>
                 </div>
                 <div className="border rounded-xl p-4 bg-indigo-50 border-indigo-200 flex flex-col justify-between">
                   <div>
@@ -1660,12 +2040,14 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
               {/* ── List of daily auto-backups ── */}
               <div>
                 <h4 className="text-[11px] font-black text-gray-400 uppercase mb-2">🗓️ Daily Backups on This Device ({backupList.length})</h4>
-                {backupList.length === 0 ? (
+                {isLoadingBackups ? (
+                  <div className="text-center text-gray-400 text-xs font-bold py-8 border rounded-xl bg-gray-50">Loading backups...</div>
+                ) : backupList.length === 0 ? (
                   <div className="text-center text-gray-400 text-xs font-bold py-8 border rounded-xl bg-gray-50">
                     No backups yet. Tap "Backup Now" above to create your first one.
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
                     {backupList.map((b) => (
                       <div key={b.dateKey} className="flex items-center justify-between bg-gray-50 border rounded-xl px-3 py-2.5">
                         <div>

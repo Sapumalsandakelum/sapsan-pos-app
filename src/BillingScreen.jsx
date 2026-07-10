@@ -4,6 +4,7 @@ import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import Swal from 'sweetalert2';
 import { printViaBluetooth, generateKitchenReceipt, generateBillReceipt, generateCancellationReceipt, getNextDailyOrderNumber } from './printUtils';
+import { logDeletedItem, logDeletedBill } from './auditUtils';
 
 export default function BillingScreen({ isTakeaway = false, currentUser }) {
   // DB Live Queries
@@ -168,7 +169,7 @@ export default function BillingScreen({ isTakeaway = false, currentUser }) {
     triggerAdminCheck('DELETE_ITEM');
   };
 
-  const executeDeleteItem = async (cartIndex) => {
+  const executeDeleteItem = async (cartIndex, deletedByAdmin) => {
     const targetItem = cart[cartIndex];
     if (!targetItem) { setPendingDeleteIndex(null); return; }
 
@@ -208,6 +209,15 @@ export default function BillingScreen({ isTakeaway = false, currentUser }) {
         const cancelRole = (cat && cat.printerType === 'BOT') ? 'bot' : 'kot';
         const cancelReceipt = generateCancellationReceipt(isTakeaway, orderIdentifier, targetItem, existingOrder.dailyOrderNumber);
         await printViaBluetooth(cancelRole, cancelReceipt);
+
+        // 📝 Record the deletion in the audit trail
+        await logDeletedItem({
+          tableNumber: orderIdentifier,
+          isTakeaway,
+          item: targetItem,
+          dailyOrderNumber: existingOrder.dailyOrderNumber,
+          deletedBy: deletedByAdmin,
+        });
       }
 
       setCart(updatedCart);
@@ -242,8 +252,8 @@ export default function BillingScreen({ isTakeaway = false, currentUser }) {
         setIsAdminModalOpen(false); setAdminUsername(''); setAdminPassword('');
         if (pendingAction === 'RE_SAVE') executeSaveOrder();
         else if (pendingAction === 'RE_PRINT') executePrintPreBill();
-        else if (pendingAction === 'CLEAR_BILL') executeClearTableBill();
-        else if (pendingAction === 'DELETE_ITEM') executeDeleteItem(pendingDeleteIndex);
+        else if (pendingAction === 'CLEAR_BILL') executeClearTableBill(matchedAdmin.username);
+        else if (pendingAction === 'DELETE_ITEM') executeDeleteItem(pendingDeleteIndex, matchedAdmin.username);
       } else {
         Swal.fire({ icon: 'error', title: 'Invalid Credentials!', text: 'Username or Password is incorrect, or you do not have Admin privileges.', confirmButtonColor: '#ef4444' });
       }
@@ -389,11 +399,13 @@ export default function BillingScreen({ isTakeaway = false, currentUser }) {
     }
   };
 
-  const executeClearTableBill = async () => {
+  const executeClearTableBill = async (deletedByAdmin) => {
     if (!selectedTable) return;
     try {
       const existingOrder = activeOrders.find(o => o.tableNumber === selectedTable);
       if (existingOrder) {
+        // 📝 Record the full bill in the audit trail before it's gone
+        await logDeletedBill({ order: existingOrder, deletedBy: deletedByAdmin });
         await db.orders.delete(existingOrder.id);
       }
       setCart([]);

@@ -22,12 +22,15 @@ import {
   restoreFromBackup
 } from './backupUtils';
 import { clearSession } from './authUtils';
+import { auditDb } from './auditUtils';
 
 export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   // DB Live Queries
   const categories = useLiveQuery(() => db.categories.toArray()) || [];
   const items = useLiveQuery(() => db.items.toArray()) || [];
   const settledOrders = useLiveQuery(() => db.orders.where('status').equals('SETTLED').toArray()) || [];
+  const deletedItemsLog = useLiveQuery(() => auditDb.deletedItems.orderBy('deletedAt').reverse().toArray()) || [];
+  const deletedBillsLog = useLiveQuery(() => auditDb.deletedBills.orderBy('deletedAt').reverse().toArray()) || [];
 
   // 👈 db.js එකේ ඇති db.admins ව්‍යුහය සෘජුවම ලබා ගැනීම
   const admins = useLiveQuery(() => db.admins.toArray()) || [];
@@ -71,6 +74,14 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
         { key: 'CUSTOMER', label: 'Sales by Table', icon: '🪑' },
         { key: 'CASHIER', label: 'Sales by Cashier', icon: '🧑‍💼' },
         { key: 'INVOICE', label: 'Invoice Log', icon: '🧾' },
+      ],
+    },
+    {
+      key: 'DELETED',
+      label: '🗑️ Deleted / Voided',
+      reports: [
+        { key: 'DELETED_ITEMS', label: 'Deleted Items', icon: '🗑️' },
+        { key: 'DELETED_BILLS', label: 'Deleted Bills', icon: '🚫' },
       ],
     },
   ];
@@ -335,6 +346,44 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   );
 
   // ==========================================
+  // 🗑️ DELETED ITEMS / DELETED BILLS — filtered with the same date range,
+  // cashier, table, and item filters as everything else above
+  // ==========================================
+  const filteredDeletedItems = deletedItemsLog.filter(log => {
+    const logDate = new Date(log.deletedAt);
+    if (rangeStart && rangeStart > logDate) return false;
+    if (rangeEnd && rangeEnd < logDate) return false;
+    if (selectedTableFilter !== 'ALL' && (log.tableNumber || 'Walk-in') !== selectedTableFilter) return false;
+    if (selectedItemFilter !== 'ALL' && log.itemName !== selectedItemFilter) return false;
+    return true;
+  });
+
+  const filteredDeletedBills = deletedBillsLog.filter(log => {
+    const logDate = new Date(log.deletedAt);
+    if (rangeStart && rangeStart > logDate) return false;
+    if (rangeEnd && rangeEnd < logDate) return false;
+    if (selectedTableFilter !== 'ALL' && (log.tableNumber || 'Walk-in') !== selectedTableFilter) return false;
+    if (selectedItemFilter !== 'ALL') {
+      const hasItem = (log.items || []).some(i => i.name === selectedItemFilter);
+      if (!hasItem) return false;
+    }
+    return true;
+  });
+
+  const deletedItemsList = applySort(
+    applySearch(filteredDeletedItems, (l) => `${l.itemName} ${l.tableNumber} ${l.deletedBy || ''}`),
+    'deletedAt'
+  );
+  const deletedBillsList = applySort(
+    applySearch(filteredDeletedBills, (l) => `${l.tableNumber} ${l.deletedBy || ''}`),
+    'deletedAt'
+  );
+
+  const currentRecordCount = reportType === 'DELETED_ITEMS' ? deletedItemsList.length
+    : reportType === 'DELETED_BILLS' ? deletedBillsList.length
+    : totalOrdersCount;
+
+  // ==========================================
   // 📤 CSV EXPORT
   // ==========================================
   const escapeCsvValue = (val) => {
@@ -393,6 +442,12 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     } else if (reportType === 'DISCOUNT') {
       headers = ['Date', 'Table', 'Discount', 'Net Total'];
       rows = discountedOrdersList.map(o => [o.settledDate ? new Date(o.settledDate).toLocaleString() : '-', o.tableNumber || 'Walk-in', (o.discountAmount || 0).toFixed(2), (o.netTotal || 0).toFixed(2)]);
+    } else if (reportType === 'DELETED_ITEMS') {
+      headers = ['Deleted At', 'Order No', 'Table', 'Item', 'Qty', 'Value', 'Deleted By (Admin)'];
+      rows = deletedItemsList.map(l => [new Date(l.deletedAt).toLocaleString(), l.dailyOrderNumber ?? '', l.tableNumber || 'Walk-in', l.itemName, l.quantity, l.lineTotal.toFixed(2), l.deletedBy || 'Unknown']);
+    } else if (reportType === 'DELETED_BILLS') {
+      headers = ['Deleted At', 'Order No', 'Table', 'Items', 'Net Total', 'Deleted By (Admin)'];
+      rows = deletedBillsList.map(l => [new Date(l.deletedAt).toLocaleString(), l.dailyOrderNumber ?? '', l.tableNumber || 'Walk-in', (l.items || []).map(it => `${it.name} x${it.quantity}`).join('; '), (l.netTotal || 0).toFixed(2), l.deletedBy || 'Unknown']);
     }
 
     if (rows.length === 0) {
@@ -1051,7 +1106,8 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
         {/* REPORTS WORKSPACE — Advanced Report Portal */}
         {activeSubTab === 'REPORTS' && (
-          <div className="col-span-12 bg-white p-4 rounded-2xl border h-full flex flex-col overflow-hidden">
+          <div className="col-span-12 bg-white rounded-2xl border h-full overflow-y-auto">
+          <div className="p-4">
 
             {/* 🖨️ Print-only header (hidden on screen, shown when printing) */}
             <div className="hidden print:block mb-4">
@@ -1061,7 +1117,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
             </div>
 
             {/* 🗂️ REPORT GROUP + TYPE SELECTOR */}
-            <div className="shrink-0 mb-3 print:hidden">
+            <div className="mb-3 print:hidden">
               <div className="flex space-x-2 overflow-x-auto pb-2 scrollbar-none">
                 {REPORT_GROUPS.map(g => (
                   <button
@@ -1201,11 +1257,11 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
             </div>
 
             {/* 📄 REPORT OUTPUT */}
-            <div className="flex-1 overflow-y-auto border rounded-xl bg-gray-50 flex flex-col">
-              <div className="bg-white p-3 border-b font-black text-xs text-indigo-700 uppercase flex justify-between items-center shrink-0 print:hidden">
+            <div className="border rounded-xl bg-gray-50">
+              <div className="bg-white p-3 border-b font-black text-xs text-indigo-700 uppercase flex justify-between items-center print:hidden rounded-t-xl">
                 <span>{currentReportMeta.icon} {currentReportMeta.label} <span className="text-gray-400 font-bold normal-case ml-1">· {dateRangeLabel}</span></span>
                 <div className="flex items-center space-x-2">
-                  <span className="text-gray-400 font-bold normal-case">{totalOrdersCount} record(s)</span>
+                  <span className="text-gray-400 font-bold normal-case">{currentRecordCount} record(s)</span>
                   <button onClick={handleExportCsv} className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-lg font-black text-[10px] transition">
                     ⬇️ CSV
                   </button>
@@ -1215,9 +1271,20 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto text-xs bg-white p-2">
+              {(reportType === 'DELETED_ITEMS' || reportType === 'DELETED_BILLS') && (
+                <div className="bg-red-50 border-b border-red-200 px-3 py-2 text-[11px] font-bold text-red-600">
+                  ⚠️ Total value {reportType === 'DELETED_ITEMS' ? 'of deleted items' : 'of deleted bills'}: Rs.{
+                    (reportType === 'DELETED_ITEMS'
+                      ? deletedItemsList.reduce((sum, l) => sum + l.lineTotal, 0)
+                      : deletedBillsList.reduce((sum, l) => sum + (l.netTotal || 0), 0)
+                    ).toFixed(2)
+                  }
+                </div>
+              )}
 
-                {filteredOrders.length === 0 && (
+              <div className="text-xs bg-white p-2 rounded-b-xl">
+
+                {filteredOrders.length === 0 && reportType !== 'DELETED_ITEMS' && reportType !== 'DELETED_BILLS' && (
                   <div className="text-center text-gray-400 font-bold py-12">No data available for the selected filters.</div>
                 )}
 
@@ -1454,8 +1521,74 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                   </div>
                 )}
 
+                {/* DELETED ITEMS — items removed from a saved order after KOT/BOT was sent */}
+                {reportType === 'DELETED_ITEMS' && (
+                  deletedItemsList.length === 0 ? (
+                    <div className="text-center text-gray-400 font-bold py-12">No deleted items found for the selected filters.</div>
+                  ) : (
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="bg-gray-100 sticky top-0">
+                          {sortableTh('Deleted At', 'deletedAt')}
+                          <th className="p-2">Order</th>
+                          <th className="p-2">Table</th>
+                          {sortableTh('Item', 'itemName')}
+                          {sortableTh('Qty', 'quantity', 'text-right')}
+                          {sortableTh('Value', 'lineTotal', 'text-right')}
+                          <th className="p-2">Deleted By (Admin)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {deletedItemsList.map((l, i) => (
+                          <tr key={i} className="border-b hover:bg-red-50">
+                            <td className="p-2">{new Date(l.deletedAt).toLocaleString()}</td>
+                            <td className="p-2 text-gray-500">{l.dailyOrderNumber != null ? `#${l.dailyOrderNumber}` : '-'}</td>
+                            <td className="p-2 font-bold">{l.tableNumber || 'Walk-in'}</td>
+                            <td className="p-2">{l.itemName}</td>
+                            <td className="p-2 text-right">{l.quantity}</td>
+                            <td className="p-2 text-right font-bold text-red-500">Rs.{l.lineTotal.toFixed(2)}</td>
+                            <td className="p-2 font-bold text-indigo-600">🛡️ {l.deletedBy || 'Unknown'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )
+                )}
+
+                {/* DELETED BILLS — an entire table's order cleared/voided by an admin */}
+                {reportType === 'DELETED_BILLS' && (
+                  deletedBillsList.length === 0 ? (
+                    <div className="text-center text-gray-400 font-bold py-12">No deleted bills found for the selected filters.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {deletedBillsList.map((l, i) => (
+                        <div key={i} className="border border-red-200 bg-red-50 rounded-lg p-2">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-black text-gray-700">
+                              🚫 {l.tableNumber || 'Walk-in'} {l.dailyOrderNumber != null && <span className="text-indigo-500">· #{l.dailyOrderNumber}</span>}
+                              <span className="text-gray-400 font-bold"> · {new Date(l.deletedAt).toLocaleString()}</span>
+                            </span>
+                            <span className="font-black text-red-600">Rs.{(l.netTotal || 0).toFixed(2)}</span>
+                          </div>
+                          <div className="text-[11px] text-gray-500">
+                            {(l.items || []).map((it, idx) => (
+                              <span key={idx}>{it.name} × {it.quantity}{idx < l.items.length - 1 ? ', ' : ''}</span>
+                            ))}
+                          </div>
+                          <div className="text-[10px] text-gray-400 mt-1 flex justify-between">
+                            <span>{l.itemCount} item(s)</span>
+                            <span className="font-bold text-indigo-600">🛡️ Deleted by: {l.deletedBy || 'Unknown'}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                )}
+
               </div>
             </div>
+
+          </div>
           </div>
         )}
 
@@ -1809,7 +1942,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                   )}
                   <div className="text-center text-[9px] font-bold my-1">--- FINAL INVOICE ---</div>
                   {billDesignForm.showOrderNumber && (
-                    <div className="text-center font-black my-1" style={{ fontSize: previewSizePx('NORMAL') }}>Order #999</div>
+                    <div className="text-center font-black my-1" style={{ fontSize: previewSizePx('HUGE') }}>Order #999</div>
                   )}
                   <div className="text-[9px] border-t border-b border-dashed border-gray-400 py-1 my-1 flex justify-between">
                     <span>Table: Table 1</span>
@@ -1848,7 +1981,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                   style={{ width: previewCharsWidth, fontFamily: 'monospace', boxShadow: '0 2px 10px rgba(0,0,0,0.08)' }}
                 >
                   {billDesignForm.kotBotShowOrderNumber && (
-                    <div className="text-center font-black" style={{ fontSize: previewSizePx('LARGE') }}>Order #999</div>
+                    <div className="text-center font-black" style={{ fontSize: previewSizePx('HUGE') }}>Order #999</div>
                   )}
                   <div className="text-center font-black" style={{ fontSize: previewSizePx(billDesignForm.kotBotFontSize) }}>*** KOT (KITCHEN) ***</div>
                   {billDesignForm.kotBotShowTable && <div className="text-[9px] text-center">Table: Table 1</div>}

@@ -6,9 +6,10 @@ import DashboardScreen from './DashboardScreen';
 import LoginPage from './LoginPage';
 import { getSession, clearSession } from './authUtils';
 import { runDailyBackupIfNeeded } from './backupUtils';
+import LicenseGate from './LicenseGate';
 import Swal from 'sweetalert2';
 
-export default function App() {
+function AppContent() {
   const [session, setSession] = useState(() => getSession());
   const [currentScreen, setCurrentScreen] = useState('BILLING'); // BILLING, ADMIN, or DASHBOARD
 
@@ -122,5 +123,15 @@ export default function App() {
         )}
       </main>
     </div>
+  );
+}
+
+// License check happens before anything else — even before the login screen —
+// since it's about this installation as a whole, not any particular user.
+export default function App() {
+  return (
+    <LicenseGate>
+      <AppContent />
+    </LicenseGate>
   );
 }

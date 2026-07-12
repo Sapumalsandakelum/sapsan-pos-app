@@ -4,7 +4,7 @@
 // license key, and periodically re-checks that it's still valid and not expired.
 
 // 👇 Replace this with your deployed license server URL after running `vercel --prod`
-const LICENSE_API_BASE = 'https://YOUR-LICENSE-SERVER.vercel.app';
+const LICENSE_API_BASE = 'https://sapsanpos.vercel.app';
 
 const DEVICE_ID_KEY = 'pos_device_id';
 const LICENSE_STATE_KEY = 'pos_license_state';

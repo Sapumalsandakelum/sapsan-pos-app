@@ -4,12 +4,11 @@
 // license key, and periodically re-checks that it's still valid and not expired.
 
 // 👇 Replace this with your deployed license server URL after running `vercel --prod`
-const LICENSE_API_BASE = 'https://sapsanpos.vercel.app';
+const LICENSE_API_BASE = 'https://YOUR-LICENSE-SERVER.vercel.app';
 
 const DEVICE_ID_KEY = 'pos_device_id';
 const LICENSE_STATE_KEY = 'pos_license_state';
 
-const VALIDATE_INTERVAL_DAYS = 3;   // try to check in this often whenever online
 const OFFLINE_GRACE_DAYS = 14;      // max stretch allowed without a successful check-in
 const EXPIRY_WARNING_DAYS = 14;     // start showing a "renew soon" notice this many days out
 
@@ -101,7 +100,7 @@ export const activateLicense = async (licenseKeyInput) => {
   }
 };
 
-// Call once when the app loads. Returns:
+// Call when the app loads (and periodically while it stays open). Returns:
 //   { status: 'NEEDS_ACTIVATION' }
 //   { status: 'OK', expiresAt, expiringSoonDays: number|null }
 //   { status: 'BLOCKED', reason: 'REVOKED' | 'EXPIRED' | 'ALREADY_ACTIVATED_ELSEWHERE', expiresAt? }
@@ -110,30 +109,31 @@ export const checkLicenseStatus = async () => {
   const state = getLicenseState();
   if (!state) return { status: 'NEEDS_ACTIVATION' };
 
-  const staleness = daysSince(state.lastValidatedAt);
+  // Always try to check in with the server first. This is what makes a revoke
+  // or expiry actually take effect promptly instead of waiting out a cache window —
+  // we only fall back to the cached local state if the server truly can't be reached.
+  try {
+    const res = await fetchWithTimeout(`${LICENSE_API_BASE}/api/license/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ licenseKey: state.licenseKey, deviceId: state.deviceId }),
+    });
+    const data = await res.json();
 
-  if (staleness >= VALIDATE_INTERVAL_DAYS) {
-    try {
-      const res = await fetchWithTimeout(`${LICENSE_API_BASE}/api/license/validate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ licenseKey: state.licenseKey, deviceId: state.deviceId }),
-      });
-      const data = await res.json();
-
-      if (data.success) {
-        const updated = { ...state, lastValidatedAt: new Date().toISOString(), expiresAt: data.expiresAt, clientName: data.clientName };
-        saveLicenseState(updated);
-        const daysLeft = daysUntil(data.expiresAt);
-        return { status: 'OK', expiresAt: data.expiresAt, expiringSoonDays: daysLeft <= EXPIRY_WARNING_DAYS ? Math.ceil(daysLeft) : null };
-      }
-      // Server explicitly rejected — genuinely blocked, not just offline
-      return { status: 'BLOCKED', reason: data.reason, expiresAt: data.expiresAt };
-    } catch (err) {
-      // Couldn't reach the server — fall through to the offline grace check below
+    if (data.success) {
+      const updated = { ...state, lastValidatedAt: new Date().toISOString(), expiresAt: data.expiresAt, clientName: data.clientName };
+      saveLicenseState(updated);
+      const daysLeft = daysUntil(data.expiresAt);
+      return { status: 'OK', expiresAt: data.expiresAt, expiringSoonDays: daysLeft <= EXPIRY_WARNING_DAYS ? Math.ceil(daysLeft) : null };
     }
+    // Server explicitly rejected — genuinely blocked, not just offline
+    return { status: 'BLOCKED', reason: data.reason, expiresAt: data.expiresAt };
+  } catch (err) {
+    // Couldn't reach the server (offline / no connection) — fall back to the
+    // last-known cached state, but only within the offline grace window
   }
 
+  const staleness = daysSince(state.lastValidatedAt);
   if (staleness >= OFFLINE_GRACE_DAYS) {
     return { status: 'NEEDS_ONLINE_CHECK' };
   }

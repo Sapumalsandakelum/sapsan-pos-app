@@ -20,10 +20,10 @@ export default function LicenseGate({ children }) {
   const [errorMsg, setErrorMsg] = useState('');
   const [dismissedWarning, setDismissedWarning] = useState(false);
 
-  const runCheck = async () => {
-    setStatus('CHECKING');
+  const runCheck = async (silent = false) => {
+    if (!silent) setStatus('CHECKING');
     const result = await checkLicenseStatus();
-    setStatus(result.status);
+    setStatus(result.status); // if this comes back BLOCKED, the app view swaps immediately either way
     setBlockReason(result.reason || null);
     if (result.status === 'OK') {
       setExpiryInfo({ expiresAt: result.expiresAt, expiringSoonDays: result.expiringSoonDays });
@@ -32,6 +32,13 @@ export default function LicenseGate({ children }) {
 
   useEffect(() => {
     runCheck();
+    // Re-check periodically while the app stays open (POS terminals are often
+    // left running all day) — this is what lets a revoke take effect without
+    // needing to close and reopen the app. Silent so it doesn't interrupt an
+    // active cashier with a loading screen every time — it only becomes visible
+    // if the result actually changes to something that needs attention.
+    const interval = setInterval(() => runCheck(true), 30 * 60 * 1000); // every 30 minutes
+    return () => clearInterval(interval);
   }, []);
 
   const handleActivate = async (e) => {

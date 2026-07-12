@@ -2,7 +2,7 @@
   "name": "sapsan-pos-app",
   "type": "module",
   "version": "1.0.0",
-  "main": "main.js",
+  "main": "main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -28,7 +28,7 @@
     "appId": "com.sapsan.pos",
     "files": [
       "dist/**/*",
-      "main.js"
+      "main.cjs"
     ],
     "win": {
       "target": "nsis"

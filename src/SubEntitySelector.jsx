@@ -1,0 +1,86 @@
+// src/SubEntitySelector.jsx
+import React, { useState, useEffect } from 'react';
+import { db } from './db';
+import { useLiveQuery } from 'dexie-react-hooks';
+import Swal from 'sweetalert2';
+import { getSubEntities, saveSubEntities, defaultSubEntities } from './mainCategoryUtils';
+
+const sortByTrailingNumber = (list) => [...list].sort((a, b) => {
+  const na = parseInt(a.replace(/\D/g, ''), 10) || 0;
+  const nb = parseInt(b.replace(/\D/g, ''), 10) || 0;
+  return na - nb;
+});
+
+export default function SubEntitySelector({ mainCategory, onSelectEntity, onBack }) {
+  const activeOrders = useLiveQuery(() => db.orders.where('status').equals('PENDING').toArray()) || [];
+  const ordersForThisCategory = activeOrders.filter(o => o.mainCategoryName === mainCategory.name);
+
+  const [entities, setEntities] = useState(() => {
+    const saved = getSubEntities(mainCategory.id);
+    if (saved && saved.length > 0) return saved;
+    return defaultSubEntities(mainCategory.usesTables);
+  });
+
+  useEffect(() => {
+    saveSubEntities(mainCategory.id, entities);
+  }, [entities, mainCategory.id]);
+
+  const addEntity = () => {
+    const numbers = entities.map(t => parseInt(t.replace(/\D/g, ''), 10)).filter(n => !isNaN(n));
+    let next = 1;
+    while (numbers.includes(next)) next++;
+    const newName = mainCategory.usesTables ? `Table ${next}` : `Order ${String(next).padStart(2, '0')}`;
+    setEntities(sortByTrailingNumber([...entities, newName]));
+    Swal.fire({ icon: 'success', title: `${newName} Added!`, toast: true, position: 'top-end', showConfirmButton: false, timer: 1800 });
+  };
+
+  const handleReset = () => {
+    Swal.fire({
+      title: 'Reset this list?',
+      text: 'Slots you added will be lost.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#4f46e5',
+      confirmButtonText: 'Yes, Reset',
+    }).then((result) => {
+      if (result.isConfirmed) {
+        setEntities(defaultSubEntities(mainCategory.usesTables));
+      }
+    });
+  };
+
+  return (
+    <div className="min-h-screen w-full bg-gray-100 p-4 sm:p-8">
+      <div className="flex items-center justify-between mb-6 max-w-4xl mx-auto">
+        <button onClick={onBack} className="bg-white border px-4 py-2 rounded-xl font-black text-sm text-gray-600 hover:bg-gray-50 transition shadow-sm">
+          ← Back
+        </button>
+        <h1 className="text-lg sm:text-xl font-black text-gray-800">{mainCategory.icon} {mainCategory.name}</h1>
+        <button onClick={handleReset} className="bg-white border px-3 py-2 rounded-xl font-bold text-[11px] text-gray-400 hover:bg-gray-50 transition shadow-sm">
+          ↺ Reset
+        </button>
+      </div>
+
+      <div className="flex flex-wrap justify-center gap-3 max-w-4xl mx-auto">
+        {entities.map((name) => {
+          const hasOrder = ordersForThisCategory.some(o => o.tableNumber === name);
+          return (
+            <div
+              key={name}
+              onClick={() => onSelectEntity(name)}
+              className={`w-24 h-24 sm:w-28 sm:h-28 rounded-2xl flex flex-col items-center justify-center cursor-pointer transition active:scale-95 shadow-sm relative ${hasOrder ? 'bg-amber-500 text-white animate-pulse' : 'bg-white hover:bg-indigo-50 text-gray-700 border'}`}
+            >
+              <span className="text-2xl mb-1">{mainCategory.usesTables ? '🪑' : '🧾'}</span>
+              <span className="font-black text-xs">{name}</span>
+              {hasOrder && <span className="absolute top-1 right-1 text-[8px] font-black bg-white text-amber-600 px-1 rounded">ACTIVE</span>}
+            </div>
+          );
+        })}
+        <div onClick={addEntity} className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl border-2 border-dashed border-indigo-300 bg-indigo-50/50 hover:bg-indigo-50 text-indigo-500 flex flex-col items-center justify-center cursor-pointer transition active:scale-95">
+          <span className="text-2xl font-light mb-1">➕</span>
+          <span className="font-bold text-[10px] uppercase">Add</span>
+        </div>
+      </div>
+    </div>
+  );
+}

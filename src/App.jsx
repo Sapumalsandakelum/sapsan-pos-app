@@ -1,6 +1,6 @@
 // src/App.jsx
 import React, { useState, useEffect } from 'react';
-import BillingScreen from './BillingScreen';
+import POSFlow from './POSFlow';
 import AdminPanel from './AdminPanel';
 import DashboardScreen from './DashboardScreen';
 import LoginPage from './LoginPage';
@@ -12,6 +12,15 @@ import Swal from 'sweetalert2';
 function AppContent() {
   const [session, setSession] = useState(() => getSession());
   const [currentScreen, setCurrentScreen] = useState('BILLING'); // BILLING, ADMIN, or DASHBOARD
+
+  // Bumped every time the Billing tab is clicked — forces POSFlow to remount
+  // fresh (back to the Main Category screen). Must live here, above the
+  // early-return below, so this hook is always called on every render
+  // regardless of login state — React requires the same hooks in the same
+  // order on every render, and putting this after the early return caused a
+  // hook-count mismatch between logged-out (fewer hooks) and logged-in
+  // (more hooks) renders, which crashed the whole app on login/logout.
+  const [billingResetKey, setBillingResetKey] = useState(0);
 
   // 💾 Runs once per app load — internally skips itself if today's backup already happened
   useEffect(() => {
@@ -45,6 +54,7 @@ function AppContent() {
   // Cashiers only ever see Billing — guards direct calls too, not just hidden buttons
   const handleTabClick = (screen) => {
     if (screen !== 'BILLING' && !isAdmin) return;
+    if (screen === 'BILLING') setBillingResetKey((k) => k + 1);
     setCurrentScreen(screen);
   };
 
@@ -107,7 +117,7 @@ function AppContent() {
 
       {/* 📲 SCREEN RENDERING */}
       <main className="flex-1 overflow-hidden">
-        {currentScreen === 'BILLING' && <BillingScreen currentUser={session} />}
+        {currentScreen === 'BILLING' && <POSFlow key={billingResetKey} currentUser={session} onLogout={handleLogout} />}
 
         {currentScreen === 'DASHBOARD' && isAdmin && (
           <DashboardScreen onBackToBilling={() => setCurrentScreen('BILLING')} />

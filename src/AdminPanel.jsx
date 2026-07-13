@@ -23,6 +23,7 @@ import {
 } from './backupUtils';
 import { clearSession } from './authUtils';
 import { auditDb } from './auditUtils';
+import { mainCategoryDb, addMainCategory, updateMainCategory, deleteMainCategory, ensureDefaultMainCategories } from './mainCategoryUtils';
 
 export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   // DB Live Queries
@@ -31,6 +32,11 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   const settledOrders = useLiveQuery(() => db.orders.where('status').equals('SETTLED').toArray()) || [];
   const deletedItemsLog = useLiveQuery(() => auditDb.deletedItems.orderBy('deletedAt').reverse().toArray()) || [];
   const deletedBillsLog = useLiveQuery(() => auditDb.deletedBills.orderBy('deletedAt').reverse().toArray()) || [];
+  const mainCategories = useLiveQuery(() => mainCategoryDb.categories.orderBy('sortOrder').toArray()) || [];
+
+  useEffect(() => {
+    ensureDefaultMainCategories();
+  }, []);
 
   // 👈 db.js එකේ ඇති db.admins ව්‍යුහය සෘජුවම ලබා ගැනීම
   const admins = useLiveQuery(() => db.admins.toArray()) || [];
@@ -845,6 +851,34 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   };
 
 
+  // ==========================================
+  // 🗂️ MAIN CATEGORY OPERATIONALS (Dine-in, Take-Away, etc.)
+  // ==========================================
+  const [mainCatName, setMainCatName] = useState('');
+  const [mainCatIcon, setMainCatIcon] = useState('🍽️');
+  const [mainCatUsesTables, setMainCatUsesTables] = useState(true);
+  const [mainCatServiceCharge, setMainCatServiceCharge] = useState(true);
+  const [editingMainCatId, setEditingMainCatId] = useState(null);
+
+  const resetMainCatForm = () => {
+    setMainCatName(''); setMainCatIcon('🍽️'); setMainCatUsesTables(true); setMainCatServiceCharge(true); setEditingMainCatId(null);
+  };
+
+  const handleSaveMainCategory = async (e) => {
+    e.preventDefault();
+    if (!mainCatName.trim()) return;
+    const data = { name: mainCatName.trim(), icon: mainCatIcon.trim() || '📋', usesTables: mainCatUsesTables, serviceChargeEnabled: mainCatServiceCharge };
+    if (editingMainCatId) await updateMainCategory(editingMainCatId, data);
+    else await addMainCategory(data);
+    resetMainCatForm();
+    Swal.fire({ icon: 'success', title: 'Saved!', toast: true, position: 'top-end', showConfirmButton: false, timer: 1500 });
+  };
+
+  const handleDeleteMainCategory = async (id) => {
+    const result = await Swal.fire({ title: 'Are you sure?', text: "Delete this main category? Its table/order list will be lost too.", icon: 'warning', showCancelButton: true, confirmButtonColor: '#ef4444', confirmButtonText: 'Yes' });
+    if (result.isConfirmed) await deleteMainCategory(id);
+  };
+
   const [catName, setCatName] = useState('');
   const [printerType, setPrinterType] = useState('KOT');
   const [editingCatId, setEditingCatId] = useState(null);
@@ -979,6 +1013,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
       {/* Tab Bar Navigation */}
       <div className="flex space-x-2 border-b pb-2 mb-4 shrink-0 overflow-x-auto scrollbar-none">
+        <button onClick={() => setActiveSubTab('MAIN_CATEGORIES')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'MAIN_CATEGORIES' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🗂️ Main Categories</button>
         <button onClick={() => setActiveSubTab('CATEGORIES')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'CATEGORIES' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>📂 Manage Categories</button>
         <button onClick={() => setActiveSubTab('ITEMS')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'ITEMS' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🍔 Manage Food Items</button>
         <button onClick={() => setActiveSubTab('REPORTS')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'REPORTS' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>📊 Premium Reports</button>
@@ -990,6 +1025,69 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
       {/* Main Container Workspaces */}
       <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-12 gap-4">
+
+        {/* MAIN CATEGORIES WORKSPACE */}
+        {activeSubTab === 'MAIN_CATEGORIES' && (
+          <>
+            <div className="md:col-span-4 bg-white p-4 rounded-2xl border h-full flex flex-col justify-between">
+              <form onSubmit={handleSaveMainCategory} className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-black text-gray-700 uppercase">{editingMainCatId ? '📝 Edit Main Category' : '➕ Add Main Category'}</h3>
+                  <p className="text-[11px] text-gray-400">Shown as the first screen after login — e.g. Dine-in, Take-Away, Delivery.</p>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1">Icon</label>
+                    <input type="text" value={mainCatIcon} onChange={(e) => setMainCatIcon(e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs text-center text-lg" maxLength={4} />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-xs font-bold text-gray-500 mb-1">Name</label>
+                    <input type="text" value={mainCatName} onChange={(e) => setMainCatName(e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs" placeholder="e.g. Dine-in" required />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Selection Mode</label>
+                  <div className="flex space-x-2">
+                    <button type="button" onClick={() => setMainCatUsesTables(true)} className={`flex-1 py-2 rounded-lg font-black text-xs border ${mainCatUsesTables ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>🪑 Tables</button>
+                    <button type="button" onClick={() => setMainCatUsesTables(false)} className={`flex-1 py-2 rounded-lg font-black text-xs border ${!mainCatUsesTables ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-500'}`}>🧾 Order Numbers</button>
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-1">"Tables" shows named tables (Table 1, 2...). "Order Numbers" auto-generates numbered orders (Order 01, 02...) — best for Take-Away/Delivery.</p>
+                </div>
+                <label className="flex items-center space-x-2 text-xs font-bold text-gray-500 bg-gray-50 border rounded-xl p-3">
+                  <input type="checkbox" checked={mainCatServiceCharge} onChange={(e) => setMainCatServiceCharge(e.target.checked)} />
+                  <span>Apply Service Charge to orders in this category</span>
+                </label>
+                <button type="submit" className="w-full bg-indigo-600 text-white p-3 rounded-xl font-black text-xs">Save</button>
+                {editingMainCatId && (
+                  <button type="button" onClick={resetMainCatForm} className="w-full bg-gray-200 text-gray-700 p-2 rounded-xl font-bold text-xs">Cancel Edit</button>
+                )}
+              </form>
+            </div>
+            <div className="md:col-span-8 bg-white p-4 rounded-2xl border h-full overflow-y-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-gray-50 font-bold text-gray-500 border-b">
+                  <tr><th className="p-3">Category</th><th className="p-3">Mode</th><th className="p-3">Service Charge</th><th className="p-3 text-center">Action</th></tr>
+                </thead>
+                <tbody>
+                  {mainCategories.map(c => (
+                    <tr key={c.id} className="border-b">
+                      <td className="p-3 font-bold">{c.icon} {c.name}</td>
+                      <td className="p-3">{c.usesTables ? '🪑 Tables' : '🧾 Order Numbers'}</td>
+                      <td className="p-3">{c.serviceChargeEnabled ? <span className="text-emerald-600 font-bold">✅ Yes</span> : <span className="text-gray-400 font-bold">— No</span>}</td>
+                      <td className="p-3 text-center space-x-2">
+                        <button onClick={() => { setEditingMainCatId(c.id); setMainCatName(c.name); setMainCatIcon(c.icon); setMainCatUsesTables(c.usesTables); setMainCatServiceCharge(c.serviceChargeEnabled); }} className="text-indigo-600 font-bold hover:underline">Edit</button>
+                        <button onClick={() => handleDeleteMainCategory(c.id)} className="text-red-500 font-bold hover:underline">Delete</button>
+                      </td>
+                    </tr>
+                  ))}
+                  {mainCategories.length === 0 && (
+                    <tr><td colSpan="4" className="p-8 text-center text-gray-400 font-bold">No main categories yet.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
 
         {/* CATEGORIES WORKSPACE */}
         {activeSubTab === 'CATEGORIES' && (

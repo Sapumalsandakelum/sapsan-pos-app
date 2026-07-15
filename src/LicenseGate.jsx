@@ -65,7 +65,7 @@ export default function LicenseGate({ children }) {
   if (status === 'CHECKING') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-900">
-        <div className="text-white/60 text-sm font-bold animate-pulse">Checking license...</div>
+        <div className="text-white/60 text-sm font-bold animate-pulse">Loading...</div>
       </div>
     );
   }

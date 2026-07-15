@@ -24,6 +24,7 @@ import {
 import { clearSession } from './authUtils';
 import { auditDb } from './auditUtils';
 import { mainCategoryDb, addMainCategory, updateMainCategory, deleteMainCategory, ensureDefaultMainCategories } from './mainCategoryUtils';
+import { getSyncServerUrl, connectToServer, disconnectFromServer, onSyncConnectionChange, getSyncStatus } from './lanSync';
 
 export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   // DB Live Queries
@@ -37,6 +38,48 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   useEffect(() => {
     ensureDefaultMainCategories();
   }, []);
+
+  // ==========================================
+  // 🌐 NETWORK SYNC (LAN)
+  // ==========================================
+  const [syncServerInput, setSyncServerInput] = useState(() => getSyncServerUrl());
+  const [syncStatus, setSyncStatus] = useState(() => getSyncStatus());
+  const [isConnectingSync, setIsConnectingSync] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onSyncConnectionChange((status) => {
+      setSyncStatus(status);
+      setIsConnectingSync(status === 'connecting');
+    });
+    return unsubscribe;
+  }, []);
+
+  const handleConnectSync = () => {
+    const url = syncServerInput.trim();
+    if (!url) {
+      Swal.fire({ icon: 'error', title: 'Enter the Server Address', text: 'e.g. http://192.168.1.50:3001' });
+      return;
+    }
+    setIsConnectingSync(true);
+    connectToServer(url);
+    localStorage.setItem('pos_lan_sync_server_url', url.replace(/\/$/, ''));
+  };
+
+  const handleDisconnectSync = () => {
+    Swal.fire({
+      title: 'Disconnect from Sync Server?',
+      text: 'This PC will stop sharing sales/data with other PCs until reconnected.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#ef4444',
+      confirmButtonText: 'Yes, Disconnect'
+    }).then((result) => {
+      if (result.isConfirmed) {
+        disconnectFromServer();
+        setSyncServerInput('');
+      }
+    });
+  };
 
   // 👈 db.js එකේ ඇති db.admins ව්‍යුහය සෘජුවම ලබා ගැනීම
   const admins = useLiveQuery(() => db.admins.toArray()) || [];
@@ -1021,6 +1064,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
         <button onClick={() => setActiveSubTab('BILL_DESIGN')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'BILL_DESIGN' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🧾 Bill Design</button>
         <button onClick={() => setActiveSubTab('PROFILE')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'PROFILE' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🧑‍💼 Profile Settings</button>
         <button onClick={() => setActiveSubTab('BACKUP')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'BACKUP' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>💾 Backup &amp; Restore</button>
+        <button onClick={() => setActiveSubTab('NETWORK_SYNC')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'NETWORK_SYNC' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🌐 Network Sync</button>
       </div>
 
       {/* Main Container Workspaces */}
@@ -2313,6 +2357,87 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
               <p className="text-[10px] text-gray-400">
                 ⚠️ Backups live in this browser on this device. Clearing browser data/site data will remove them — download a file copy periodically if you want a copy that survives that.
               </p>
+            </div>
+          </div>
+        )}
+
+        {/* 🌐 NETWORK SYNC WORKSPACE */}
+        {activeSubTab === 'NETWORK_SYNC' && (
+          <div className="col-span-12 bg-white rounded-2xl border h-full flex flex-col overflow-hidden">
+            <div className="flex-1 overflow-y-auto p-4 space-y-5">
+
+              <div>
+                <h3 className="text-sm font-black text-gray-700 uppercase">🌐 Network Sync (LAN)</h3>
+                <p className="text-[11px] text-gray-400 mt-0.5">
+                  Connect this PC to your restaurant's local Sync Server so sales and data stay in real-time sync across every PC — over WiFi or Ethernet, no internet required.
+                </p>
+              </div>
+
+              {/* Status */}
+              <div className={`border rounded-xl p-4 flex items-center justify-between ${
+                syncStatus === 'connected' ? 'bg-emerald-50 border-emerald-200' :
+                syncStatus === 'connecting' ? 'bg-amber-50 border-amber-200' :
+                syncStatus === 'error' ? 'bg-red-50 border-red-200' :
+                'bg-gray-50 border-gray-200'
+              }`}>
+                <div>
+                  <div className={`text-[11px] font-black uppercase mb-1 ${
+                    syncStatus === 'connected' ? 'text-emerald-700' :
+                    syncStatus === 'connecting' ? 'text-amber-700' :
+                    syncStatus === 'error' ? 'text-red-700' :
+                    'text-gray-500'
+                  }`}>
+                    {syncStatus === 'connected' && '🟢 Connected — syncing live'}
+                    {syncStatus === 'connecting' && '🟡 Connecting...'}
+                    {syncStatus === 'disconnected' && '🔴 Disconnected'}
+                    {syncStatus === 'error' && '🔴 Connection Error'}
+                    {syncStatus === 'not_configured' && '⚪ Not Set Up Yet'}
+                  </div>
+                  <div className="text-[11px] text-gray-500">
+                    {syncStatus === 'connected' && 'This PC is sharing sales/data with every other connected PC in real time.'}
+                    {syncStatus === 'not_configured' && 'Enter the Sync Server address below to get started.'}
+                    {syncStatus === 'disconnected' && 'Working normally on local data only — will resync automatically once reconnected.'}
+                    {syncStatus === 'error' && 'Could not reach the server. Check the address and that the server PC is running.'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Connect form */}
+              <div className="border rounded-xl p-4 bg-indigo-50 border-indigo-200">
+                <label className="block text-[11px] font-black text-indigo-700 uppercase mb-2">Sync Server Address</label>
+                <div className="flex space-x-2">
+                  <input
+                    type="text"
+                    value={syncServerInput}
+                    onChange={(e) => setSyncServerInput(e.target.value)}
+                    placeholder="http://192.168.1.50:3001"
+                    className="flex-1 p-2.5 border rounded-xl font-bold text-sm"
+                  />
+                  <button onClick={handleConnectSync} disabled={isConnectingSync} className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white px-5 py-2.5 rounded-xl font-black text-xs transition">
+                    {isConnectingSync ? '⏳' : '🔌 Connect'}
+                  </button>
+                  {syncStatus !== 'not_configured' && (
+                    <button onClick={handleDisconnectSync} className="bg-white border border-red-200 hover:bg-red-50 text-red-600 px-4 py-2.5 rounded-xl font-black text-xs transition">
+                      Disconnect
+                    </button>
+                  )}
+                </div>
+                <p className="text-[10px] text-indigo-500 mt-2">
+                  This is the address shown when you start the Sync Server on the server PC (Admin Panel → Network Sync isn't needed there if that PC is also a client — see the README in the sapsan-lan-server folder).
+                </p>
+              </div>
+
+              {/* Instructions */}
+              <div className="border rounded-xl p-4 bg-gray-50">
+                <div className="text-[11px] font-black text-gray-600 uppercase mb-2">📋 How to Set This Up</div>
+                <ol className="text-[11px] text-gray-500 space-y-1.5 list-decimal pl-4">
+                  <li>Pick <b>one PC</b> to be the Server (e.g. your main counter) — copy the <code className="bg-white px-1 rounded border">sapsan-lan-server</code> folder to it and double-click <code className="bg-white px-1 rounded border">START_SERVER.bat</code>.</li>
+                  <li>It will show an address like <code className="bg-white px-1 rounded border">http://192.168.1.50:3001</code> — write it down. Keep that window open.</li>
+                  <li>On <b>every other PC</b>, come to this exact screen and paste that address into the field above, then click Connect.</li>
+                  <li>Prefer a wired Ethernet connection over WiFi where possible — same setup either way, just faster and more reliable.</li>
+                </ol>
+              </div>
+
             </div>
           </div>
         )}

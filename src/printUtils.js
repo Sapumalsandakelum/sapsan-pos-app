@@ -361,7 +361,7 @@ export const generateKitchenReceipt = (isTakeaway, tableName, typeLabel, itemsLi
   // can spot and call it out instantly. Always HUGE regardless of kotBotFontSize.
   if (settings.kotBotShowOrderNumber && orderNumber !== undefined && orderNumber !== null) {
     data.push(ESC_FONT_BOLD);
-    data.push(ESC_SIZE_LARGE);
+    data.push(ESC_SIZE_HUGE);
     data.push(textToBytes(`Order #${orderNumber}`));
     data.push(ESC_SIZE_NORMAL);
     data.push(ESC_FONT_NORMAL);
@@ -414,7 +414,7 @@ export const generateCancellationReceipt = (isTakeaway, tableName, item, orderNu
   // Order Number — same treatment as the original KOT/BOT: HUGE, first thing printed
   if (settings.kotBotShowOrderNumber && orderNumber !== undefined && orderNumber !== null) {
     data.push(ESC_FONT_BOLD);
-    data.push(ESC_SIZE_NORMAL);
+    data.push(ESC_SIZE_HUGE);
     data.push(textToBytes(`Order #${orderNumber}`));
     data.push(ESC_SIZE_NORMAL);
     data.push(ESC_FONT_NORMAL);
@@ -514,7 +514,7 @@ export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub,
   // Order Number — always printed HUGE & bold, right at the top of the bill
   if (settings.showOrderNumber && orderNumber !== undefined && orderNumber !== null) {
     data.push(ESC_FONT_BOLD);
-    data.push(ESC_SIZE_NORMAL);
+    data.push(ESC_SIZE_HUGE);
     data.push(textToBytes(`Order #${orderNumber}`));
     heightMm += LINE_HEIGHT_MM.HUGE;
     data.push(bodySize);
@@ -580,6 +580,128 @@ export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub,
     const remainingDots = remainingMm * (PRINTER_DPI / 25.4);
     data.push(...escFeedDots(remainingDots));
   }
+
+  return data;
+};
+
+// Day End Report — thermal receipt version. Condensed to fit narrow paper
+// (58/80mm), following the same styling conventions as the bill/KOT/BOT
+// receipts (store branding, paper-width-aware line width, etc).
+export const generateDayEndReceipt = (reportData) => {
+  const {
+    daySession, totalNetSales, totalDiscounts, totalServiceCharge, totalItemsSold,
+    totalOrders, paymentMap, cashierList, topProducts,
+    cashExpected, cashCounted, cashVariance,
+    deletedItemsCount, deletedBillsCount, isClosed,
+  } = reportData;
+
+  const settings = getBillDesignSettings();
+  const { charsPerLine } = PAPER_WIDTH_CONFIG[settings.paperWidth] || PAPER_WIDTH_CONFIG['80mm'];
+  const sep = '-'.repeat(charsPerLine);
+
+  const data = [];
+  data.push(ESC_ALIGN_CENTER);
+
+  // Store name
+  data.push(ESC_FONT_BOLD);
+  data.push(ESC_SIZE_LARGE);
+  data.push(textToBytes(settings.storeName || 'MY RESTAURANT'));
+  data.push(ESC_SIZE_NORMAL);
+  data.push(ESC_FONT_NORMAL);
+
+  data.push(ESC_FONT_BOLD);
+  data.push(textToBytes('*** DAY END REPORT ***'));
+  data.push(ESC_FONT_NORMAL);
+
+  const now = new Date();
+  data.push(textToBytes(`${now.toLocaleDateString()}  ${now.toLocaleTimeString()}`));
+  data.push(textToBytes(sep));
+
+  data.push(ESC_ALIGN_LEFT);
+  if (daySession) {
+    data.push(textToBytes(`Started: ${new Date(daySession.startedAt).toLocaleTimeString()} by ${daySession.startedBy}`));
+    if (isClosed && daySession.endedAt) {
+      data.push(textToBytes(`Closed: ${new Date(daySession.endedAt).toLocaleTimeString()} by ${daySession.endedBy}`));
+    }
+  }
+  data.push(textToBytes(sep));
+
+  // KPIs
+  data.push(ESC_FONT_BOLD);
+  data.push(textToBytes(`Total Orders: ${totalOrders}`));
+  data.push(textToBytes(`Items Sold: ${totalItemsSold}`));
+  data.push(ESC_FONT_NORMAL);
+  data.push(textToBytes(`Service Charge: Rs.${totalServiceCharge.toFixed(2)}`));
+  data.push(textToBytes(`Discounts: Rs.${totalDiscounts.toFixed(2)}`));
+  data.push(textToBytes(sep));
+
+  // Payment breakdown
+  data.push(ESC_FONT_BOLD);
+  data.push(textToBytes('PAYMENT METHODS'));
+  data.push(ESC_FONT_NORMAL);
+  data.push(textToBytes(`Cash:     Rs.${paymentMap.CASH.toFixed(2)}`));
+  data.push(textToBytes(`Card:     Rs.${paymentMap.CARD.toFixed(2)}`));
+  data.push(textToBytes(`Transfer: Rs.${paymentMap.TRANSFER.toFixed(2)}`));
+  data.push(textToBytes(sep));
+
+  // Cash reconciliation
+  if (cashCounted != null) {
+    data.push(ESC_FONT_BOLD);
+    data.push(textToBytes('CASH RECONCILIATION'));
+    data.push(ESC_FONT_NORMAL);
+    data.push(textToBytes(`Expected: Rs.${cashExpected.toFixed(2)}`));
+    data.push(textToBytes(`Counted:  Rs.${cashCounted.toFixed(2)}`));
+    const varLabel = cashVariance === 0 ? 'MATCH' : cashVariance > 0 ? `OVER Rs.${cashVariance.toFixed(2)}` : `SHORT Rs.${Math.abs(cashVariance).toFixed(2)}`;
+    data.push(ESC_FONT_BOLD);
+    data.push(textToBytes(`Variance: ${varLabel}`));
+    data.push(ESC_FONT_NORMAL);
+    data.push(textToBytes(sep));
+  }
+
+  // Sales by cashier
+  if (cashierList && cashierList.length > 0) {
+    data.push(ESC_FONT_BOLD);
+    data.push(textToBytes('SALES BY CASHIER'));
+    data.push(ESC_FONT_NORMAL);
+    cashierList.forEach(c => {
+      data.push(textToBytes(`${c.name}`));
+      data.push(ESC_ALIGN_RIGHT);
+      data.push(textToBytes(`Rs.${c.revenue.toFixed(2)}`));
+      data.push(ESC_ALIGN_LEFT);
+    });
+    data.push(textToBytes(sep));
+  }
+
+  // Top 5 sellers (condensed — full top 10 available on screen)
+  if (topProducts && topProducts.length > 0) {
+    data.push(ESC_FONT_BOLD);
+    data.push(textToBytes('TOP SELLERS'));
+    data.push(ESC_FONT_NORMAL);
+    topProducts.slice(0, 5).forEach((p, i) => {
+      data.push(textToBytes(`${i + 1}. ${p.name} x${p.qty}`));
+    });
+    data.push(textToBytes(sep));
+  }
+
+  // Deleted/voided
+  if (deletedItemsCount > 0 || deletedBillsCount > 0) {
+    data.push(textToBytes(`Deleted Items: ${deletedItemsCount}`));
+    data.push(textToBytes(`Voided Bills: ${deletedBillsCount}`));
+    data.push(textToBytes(sep));
+  }
+
+  // Net total — bold + large, same treatment as the bill
+  data.push(ESC_ALIGN_CENTER);
+  data.push(ESC_FONT_BOLD);
+  data.push(ESC_SIZE_LARGE);
+  data.push(textToBytes(`NET SALES: Rs.${totalNetSales.toFixed(2)}`));
+  data.push(ESC_SIZE_NORMAL);
+  data.push(ESC_FONT_NORMAL);
+
+  data.push(textToBytes(sep));
+  data.push(ESC_SIZE_NORMAL);
+  data.push(textToBytes(DEVELOPER_CREDIT_LINE_1));
+  data.push(textToBytes(DEVELOPER_CREDIT_LINE_2));
 
   return data;
 };

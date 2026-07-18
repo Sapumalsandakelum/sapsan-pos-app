@@ -5,6 +5,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import Swal from 'sweetalert2';
 import { getCurrentDaySession, closeDay } from './dayEndUtils';
 import { auditDb } from './auditUtils';
+import { printViaBluetooth, generateDayEndReceipt } from './printUtils';
 
 export default function DayEndReport({ onBack }) {
   const settledOrders = useLiveQuery(() => db.orders.where('status').equals('SETTLED').toArray()) || [];
@@ -98,6 +99,56 @@ export default function DayEndReport({ onBack }) {
     }
   };
 
+  const [isPrinting, setIsPrinting] = useState(false);
+
+  const handleThermalPrint = async () => {
+    setIsPrinting(true);
+    try {
+      // Check the printer setup directly first, so we can show exactly what's
+      // wrong instead of one generic message covering several possible causes.
+      const mappingSaved = localStorage.getItem('pos_printer_mapping');
+      const devicesSaved = localStorage.getItem('pos_paired_bluetooth_devices');
+      const mapping = mappingSaved ? JSON.parse(mappingSaved) : {};
+      const billDeviceId = mapping.bill;
+      const allDevices = devicesSaved ? JSON.parse(devicesSaved) : [];
+      const billDevice = allDevices.find(d => d.id === billDeviceId);
+
+      console.log('🖨️ Day End print diagnostics:', { mapping, billDeviceId, pairedDeviceCount: allDevices.length, billDeviceFound: !!billDevice });
+
+      if (!billDeviceId) {
+        Swal.fire({ icon: 'warning', title: 'No Bill Printer Assigned (on this device)', text: 'Admin Panel → Printer Settings shows no printer saved for BILL in this app instance. If Bill printing works elsewhere, this may be a different install/browser profile with its own separate settings — re-assign it here too.' });
+        return;
+      }
+      if (!billDevice) {
+        Swal.fire({ icon: 'warning', title: 'Bill Printer Not Found', text: `A printer was assigned to BILL, but it's no longer in the paired devices list. Go to Admin Panel → Printer Settings and re-pair it (tap "Load Paired BT Devices").` });
+        return;
+      }
+
+      const receipt = generateDayEndReceipt({
+        daySession,
+        totalNetSales, totalDiscounts, totalServiceCharge, totalItemsSold,
+        totalOrders: todaysOrders.length,
+        paymentMap, cashierList, topProducts,
+        cashExpected,
+        cashCounted: cashCounted !== '' ? cashCountedNum : (isAlreadyClosed ? daySession?.cashCounted : null),
+        cashVariance: cashCounted !== '' ? cashVariance : (isAlreadyClosed ? daySession?.cashVariance : null),
+        deletedItemsCount: todaysDeletedItems.length,
+        deletedBillsCount: todaysDeletedBills.length,
+        isClosed: isAlreadyClosed,
+      });
+      const printed = await printViaBluetooth('bill', receipt);
+      if (!printed) {
+        Swal.fire({ icon: 'error', title: 'Print Failed', text: `Found "${billDevice.name}" but could not print to it. Check it's powered on and in range, then try again.` });
+      }
+    } catch (err) {
+      console.error(err);
+      Swal.fire({ icon: 'error', title: 'Print Failed', text: err.message });
+    } finally {
+      setIsPrinting(false);
+    }
+
+  };
+
   const handleExportCsv = () => {
     const rows = [
       ['Metric', 'Value'],
@@ -128,17 +179,15 @@ export default function DayEndReport({ onBack }) {
       <div className="max-w-4xl mx-auto space-y-4 pb-10">
 
         {/* Header */}
-        <div className="flex items-center justify-between bg-white rounded-2xl border px-4 py-3 shadow-sm print:hidden">
+        <div className="flex items-center justify-between bg-white rounded-2xl border px-4 py-3 shadow-sm">
           <button onClick={onBack} className="bg-gray-100 hover:bg-gray-200 text-gray-600 px-3 py-1.5 rounded-xl font-black text-xs transition">← Back</button>
           <h1 className="text-lg font-black text-gray-800">📊 Day End Report</h1>
           <div className="flex space-x-2">
             <button onClick={handleExportCsv} className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-lg font-black text-[10px] transition">⬇️ CSV</button>
-            <button onClick={() => window.print()} className="bg-gray-50 hover:bg-gray-100 text-gray-600 border border-gray-200 px-3 py-1.5 rounded-lg font-black text-[10px] transition">🖨️ Print</button>
+            <button onClick={handleThermalPrint} disabled={isPrinting} className="bg-gray-50 hover:bg-gray-100 disabled:bg-gray-100 text-gray-600 border border-gray-200 px-3 py-1.5 rounded-lg font-black text-[10px] transition">
+              {isPrinting ? '⏳ Printing...' : '🖨️ Print'}
+            </button>
           </div>
-        </div>
-
-        <div className="hidden print:block">
-          <h1 className="text-xl font-black">Day End Report — {new Date().toLocaleDateString()}</h1>
         </div>
 
         {/* Day session status */}
@@ -184,7 +233,7 @@ export default function DayEndReport({ onBack }) {
 
         {/* Cash Reconciliation */}
         {!isAlreadyClosed && (
-          <div className="bg-amber-50 rounded-2xl border border-amber-200 p-4 print:hidden">
+          <div className="bg-amber-50 rounded-2xl border border-amber-200 p-4">
             <h3 className="text-xs font-black text-amber-700 uppercase mb-3">🧮 Cash Reconciliation</h3>
             <div className="grid grid-cols-2 gap-3 items-end">
               <div>
@@ -265,7 +314,7 @@ export default function DayEndReport({ onBack }) {
         </div>
 
         {/* Close Day Button */}
-        <div className="print:hidden">
+        <div>
           <button
             onClick={handleCloseDayClick}
             disabled={isClosing}

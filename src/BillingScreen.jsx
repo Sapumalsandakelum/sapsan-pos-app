@@ -70,6 +70,25 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
   // ==========================================
 
   const addToCart = (item) => {
+    if (item.isStockManaged) {
+      const currentCartQty = cart
+        .filter(c => c.id === item.id)
+        .reduce((sum, c) => sum + c.quantity, 0);
+
+      if (currentCartQty + 1 > item.stockLevel) {
+        Swal.fire({
+          icon: 'warning',
+          title: 'Stock Limit Reached',
+          text: `Only ${item.stockLevel} units of "${item.name}" are available.`,
+          toast: true,
+          position: 'top-end',
+          showConfirmButton: false,
+          timer: 2500
+        });
+        return;
+      }
+    }
+
     const unsavedIndex = cart.findIndex(c => c.id === item.id && !c.isSaved);
     let newCart = [...cart];
     if (unsavedIndex > -1) newCart[unsavedIndex].quantity += 1;
@@ -83,6 +102,26 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
       Swal.fire({ icon: 'error', title: '🔒 Action Restricted!', text: 'You cannot modify items that are already saved.', confirmButtonColor: '#ef4444' });
       return;
     }
+
+    if (amount > 0 && targetItem.isStockManaged) {
+      const currentCartQty = cart
+        .filter(c => c.id === targetItem.id)
+        .reduce((sum, c) => sum + c.quantity, 0);
+
+      if (currentCartQty + amount > targetItem.stockLevel) {
+        Swal.fire({
+          icon: 'warning',
+          title: 'Stock Limit Reached',
+          text: `Only ${targetItem.stockLevel} units of "${targetItem.name}" are available.`,
+          toast: true,
+          position: 'top-end',
+          showConfirmButton: false,
+          timer: 2500
+        });
+        return;
+      }
+    }
+
     let newCart = [...cart];
     const newQty = targetItem.quantity + amount;
     if (newQty > 0) newCart[cartIndex].quantity = newQty;
@@ -127,6 +166,13 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
 
     try {
       if (existingOrder) {
+        // Return stock for deleted item
+        const dbItem = await db.items.where('name').equals(targetItem.name).first();
+        if (dbItem && dbItem.isStockManaged) {
+          const newStock = (dbItem.stockLevel || 0) + targetItem.quantity;
+          await db.items.update(dbItem.id, { stockLevel: newStock });
+        }
+
         const remainingSavedItems = updatedCart.filter(i => i.isSaved);
         let newSubTotal = 0, newServiceCharge = 0;
         remainingSavedItems.forEach(i => {
@@ -219,6 +265,38 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
     else executeSaveOrder();
   };
 
+  const adjustStockForOrder = async (newItems, oldItems = []) => {
+    try {
+      const oldQtyMap = {};
+      oldItems.forEach(it => {
+        oldQtyMap[it.name] = (oldQtyMap[it.name] || 0) + it.quantity;
+      });
+
+      const newQtyMap = {};
+      newItems.forEach(it => {
+        newQtyMap[it.name] = (newQtyMap[it.name] || 0) + it.quantity;
+      });
+
+      const allNames = Array.from(new Set([...Object.keys(oldQtyMap), ...Object.keys(newQtyMap)]));
+
+      for (const name of allNames) {
+        const oldQty = oldQtyMap[name] || 0;
+        const newQty = newQtyMap[name] || 0;
+        const diff = newQty - oldQty;
+
+        if (diff === 0) continue;
+
+        const dbItem = await db.items.where('name').equals(name).first();
+        if (dbItem && dbItem.isStockManaged) {
+          const newStock = Math.max(0, (dbItem.stockLevel || 0) - diff);
+          await db.items.update(dbItem.id, { stockLevel: newStock });
+        }
+      }
+    } catch (err) {
+      console.error("Failed to adjust stock for order:", err);
+    }
+  };
+
   const executeSaveOrder = async () => {
     if (cart.length === 0) {
       Swal.fire({ icon: 'info', title: 'Cart is Empty!', confirmButtonColor: '#4f46e5' });
@@ -246,6 +324,8 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
       let currentPreBillState = isPreBillPrinted;
       let savedOrderId;
       let orderNumber;
+
+      await adjustStockForOrder(finalItemsForDb, existingOrder ? existingOrder.items : []);
 
       if (existingOrder) {
         currentPreBillState = false;
@@ -354,6 +434,15 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
   const executeClearTableBill = async (deletedByAdmin) => {
     try {
       if (existingOrder) {
+        if (existingOrder.items && existingOrder.items.length > 0) {
+          for (const item of existingOrder.items) {
+            const dbItem = await db.items.where('name').equals(item.name).first();
+            if (dbItem && dbItem.isStockManaged) {
+              const newStock = (dbItem.stockLevel || 0) + item.quantity;
+              await db.items.update(dbItem.id, { stockLevel: newStock });
+            }
+          }
+        }
         // 📝 Record the full bill in the audit trail before it's gone
         await logDeletedBill({ order: existingOrder, deletedBy: deletedByAdmin });
         await db.orders.delete(existingOrder.id);
@@ -418,12 +507,38 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
             ))}
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 overflow-y-auto flex-1 content-start pt-1">
-            {filteredItems.map(item => (
-              <div key={item.id} onClick={() => addToCart(item)} className="bg-gray-50 hover:bg-indigo-50 p-3 rounded-xl border active:scale-95 transition cursor-pointer flex flex-col justify-between h-24">
-                <div className="font-bold text-xs text-gray-700 line-clamp-2">{item.name}</div>
-                <div className="text-indigo-600 font-black text-sm">Rs.{item.sellingPrice.toFixed(0)}</div>
-              </div>
-            ))}
+            {filteredItems.map(item => {
+              const isOutOfStock = item.isStockManaged && (item.stockLevel || 0) <= 0;
+              return (
+                <div 
+                  key={item.id} 
+                  onClick={() => {
+                    if (isOutOfStock) {
+                      Swal.fire({ icon: 'warning', title: 'Out of Stock', text: `"${item.name}" is currently unavailable.`, toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
+                      return;
+                    }
+                    addToCart(item);
+                  }} 
+                  className={`p-3 rounded-xl border transition relative flex flex-col justify-between h-24 ${
+                    isOutOfStock 
+                      ? 'bg-gray-100 border-gray-200 cursor-not-allowed opacity-60' 
+                      : 'bg-gray-50 hover:bg-indigo-50 hover:border-indigo-300 active:scale-95 cursor-pointer shadow-sm'
+                  }`}
+                >
+                  <div className="font-bold text-xs text-gray-700 line-clamp-2 pr-4">{item.name}</div>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-indigo-600 font-black text-sm">Rs.{item.sellingPrice.toFixed(0)}</span>
+                    {item.isStockManaged && (
+                      isOutOfStock ? (
+                        <span className="text-[8px] font-black bg-red-100 text-red-600 px-1 rounded">OUT</span>
+                      ) : (
+                        <span className="text-[8px] font-black bg-indigo-100 text-indigo-600 px-1 rounded">{item.stockLevel} left</span>
+                      )
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 

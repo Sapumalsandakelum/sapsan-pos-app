@@ -11,9 +11,11 @@ const sortByTrailingNumber = (list) => [...list].sort((a, b) => {
   return na - nb;
 });
 
-export default function SubEntitySelector({ mainCategory, onSelectEntity, onBack }) {
+export default function SubEntitySelector({ mainCategory, currentUser, onSelectEntity, onBack }) {
   const activeOrders = useLiveQuery(() => db.orders.where('status').equals('PENDING').toArray()) || [];
   const ordersForThisCategory = activeOrders.filter(o => o.mainCategoryName === mainCategory.name);
+
+  const isAdmin = currentUser?.role === 'ADMIN';
 
   const [entities, setEntities] = useState(() => {
     const saved = getSubEntities(mainCategory.id);
@@ -56,30 +58,69 @@ export default function SubEntitySelector({ mainCategory, onSelectEntity, onBack
           ← Back
         </button>
         <h1 className="text-lg sm:text-xl font-black text-gray-800">{mainCategory.icon} {mainCategory.name}</h1>
-        <button onClick={handleReset} className="bg-white border px-3 py-2 rounded-xl font-bold text-[11px] text-gray-400 hover:bg-gray-50 transition shadow-sm">
-          ↺ Reset
-        </button>
+        {isAdmin ? (
+          <button onClick={handleReset} className="bg-white border px-3 py-2 rounded-xl font-bold text-[11px] text-gray-400 hover:bg-gray-50 transition shadow-sm">
+            ↺ Reset
+          </button>
+        ) : (
+          <div className="w-[60px]" />
+        )}
       </div>
 
       <div className="flex flex-wrap justify-center gap-3 max-w-4xl mx-auto">
         {entities.map((name) => {
-          const hasOrder = ordersForThisCategory.some(o => o.tableNumber === name);
+          const order = ordersForThisCategory.find(o => o.tableNumber === name);
+          const hasOrder = !!order;
+          const isOwnedByOthers = hasOrder && !isAdmin && order.cashierName !== currentUser?.username;
+
           return (
             <div
               key={name}
-              onClick={() => onSelectEntity(name)}
-              className={`w-24 h-24 sm:w-28 sm:h-28 rounded-2xl flex flex-col items-center justify-center cursor-pointer transition active:scale-95 shadow-sm relative ${hasOrder ? 'bg-amber-500 text-white animate-pulse' : 'bg-white hover:bg-indigo-50 text-gray-700 border'}`}
+              onClick={() => {
+                if (isOwnedByOthers) {
+                  Swal.fire({
+                    icon: 'warning',
+                    title: 'Table Locked',
+                    text: `This table is managed by ${order.cashierName || 'another cashier'}.`,
+                    toast: true,
+                    position: 'top-end',
+                    showConfirmButton: false,
+                    timer: 2500
+                  });
+                  return;
+                }
+                onSelectEntity(name);
+              }}
+              className={`w-24 h-24 sm:w-28 sm:h-28 rounded-2xl flex flex-col items-center justify-center transition active:scale-95 shadow-sm relative ${
+                isOwnedByOthers 
+                  ? 'bg-rose-600 text-white cursor-not-allowed border border-rose-700 shadow-lg' 
+                  : hasOrder 
+                    ? 'bg-amber-500 text-white animate-pulse cursor-pointer shadow-lg' 
+                    : 'bg-white hover:bg-indigo-50 text-gray-700 border hover:border-indigo-300 cursor-pointer'
+              }`}
             >
-              <span className="text-2xl mb-1">{mainCategory.usesTables ? '🪑' : '🧾'}</span>
+              <span className="text-2xl mb-1">{isOwnedByOthers ? '🔒' : (mainCategory.usesTables ? '🪑' : '🧾')}</span>
               <span className="font-black text-xs">{name}</span>
-              {hasOrder && <span className="absolute top-1 right-1 text-[8px] font-black bg-white text-amber-600 px-1 rounded">ACTIVE</span>}
+              {isOwnedByOthers && (
+                <span className="absolute top-1.5 right-1.5 text-[8px] font-black bg-rose-800 text-white px-1.5 py-0.5 rounded">LOCKED</span>
+              )}
+              {hasOrder && !isOwnedByOthers && (
+                <span className="absolute top-1.5 right-1.5 text-[8px] font-black bg-white text-amber-600 px-1.5 py-0.5 rounded">ACTIVE</span>
+              )}
+              {hasOrder && (
+                <span className="absolute bottom-1.5 text-[8px] font-black text-white/90 bg-black/15 px-1.5 py-0.5 rounded uppercase truncate max-w-[92%]">
+                  👤 {order.cashierName || 'Cashier'}
+                </span>
+              )}
             </div>
           );
         })}
-        <div onClick={addEntity} className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl border-2 border-dashed border-indigo-300 bg-indigo-50/50 hover:bg-indigo-50 text-indigo-500 flex flex-col items-center justify-center cursor-pointer transition active:scale-95">
-          <span className="text-2xl font-light mb-1">➕</span>
-          <span className="font-bold text-[10px] uppercase">Add</span>
-        </div>
+        {isAdmin && (
+          <div onClick={addEntity} className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl border-2 border-dashed border-indigo-300 bg-indigo-50/50 hover:bg-indigo-50 text-indigo-500 flex flex-col items-center justify-center cursor-pointer transition active:scale-95">
+            <span className="text-2xl font-light mb-1">➕</span>
+            <span className="font-bold text-[10px] uppercase">Add</span>
+          </div>
+        )}
       </div>
     </div>
   );

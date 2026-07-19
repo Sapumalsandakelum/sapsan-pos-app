@@ -157,6 +157,8 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   const [selectedTableFilter, setSelectedTableFilter] = useState('ALL');
   const [reportSearchTerm, setReportSearchTerm] = useState('');
   const [sortConfig, setSortConfig] = useState({ key: null, direction: 'desc' });
+  const [expandedOrderId, setExpandedOrderId] = useState(null);
+  const [hoveredPoint, setHoveredPoint] = useState(null);
 
   // Reset sort whenever the report type changes — different reports have different columns
   useEffect(() => {
@@ -947,6 +949,8 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   const [itemPrice, setItemPrice] = useState('');
   const [itemCategory, setItemCategory] = useState('');
   const [serviceCharge, setServiceCharge] = useState('10');
+  const [isStockManaged, setIsStockManaged] = useState(false);
+  const [stockLevel, setStockLevel] = useState('');
   const [editingItemId, setEditingItemId] = useState(null);
 
   const handleSaveItem = async (e) => {
@@ -956,17 +960,313 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
       costPrice: parseFloat(itemCostPrice) || 0,
       sellingPrice: parseFloat(itemPrice),
       categoryId: parseInt(itemCategory),
-      serviceChargePercentage: parseFloat(serviceCharge) || 0
+      serviceChargePercentage: parseFloat(serviceCharge) || 0,
+      isStockManaged: !!isStockManaged,
+      stockLevel: isStockManaged ? (parseInt(stockLevel) || 0) : 0
     };
     if (editingItemId) await db.items.update(editingItemId, data);
     else await db.items.add(data);
-    setItemName(''); setItemCostPrice(''); setItemPrice(''); setItemCategory(''); setServiceCharge('10'); setEditingItemId(null);
+    setItemName(''); setItemCostPrice(''); setItemPrice(''); setItemCategory(''); setServiceCharge('10'); setIsStockManaged(false); setStockLevel(''); setEditingItemId(null);
     Swal.fire({ icon: 'success', title: 'Saved!', toast: true, position: 'top-end', showConfirmButton: false, timer: 1500 });
   };
 
   const handleDeleteItem = async (id) => {
     const result = await Swal.fire({ title: 'Are you sure?', text: "Delete this item?", icon: 'warning', showCancelButton: true, confirmButtonColor: '#ef4444', confirmButtonText: 'Yes' });
     if (result.isConfirmed) { await db.items.delete(id); }
+  };
+
+  const renderSalesTrendChart = () => {
+    if (filteredOrders.length === 0) return null;
+
+    const isShortRange = datePreset === 'TODAY' || datePreset === 'YESTERDAY' || 
+      (rangeStart && rangeEnd && (rangeEnd - rangeStart) <= 2 * 24 * 60 * 60 * 1000);
+
+    const groups = {};
+    filteredOrders.forEach(o => {
+      if (!o.settledDate) return;
+      const d = new Date(o.settledDate);
+      const label = isShortRange 
+        ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })
+        : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      
+      const sortKey = d.getTime();
+      if (!groups[label]) {
+        groups[label] = { label, sales: 0, sortKey, count: 0 };
+      }
+      groups[label].sales += o.netTotal || 0;
+      groups[label].count += 1;
+    });
+
+    const sortedPoints = Object.values(groups).sort((a, b) => a.sortKey - b.sortKey);
+    if (sortedPoints.length < 2) {
+      if (sortedPoints.length === 1) {
+        sortedPoints.unshift({ label: 'Start', sales: 0, count: 0 });
+      } else {
+        return null;
+      }
+    }
+
+    const padding = { top: 20, right: 30, bottom: 40, left: 60 };
+    const width = 800;
+    const height = 220;
+    const chartWidth = width - padding.left - padding.right;
+    const chartHeight = height - padding.top - padding.bottom;
+
+    const maxSales = Math.max(...sortedPoints.map(p => p.sales)) * 1.15 || 100;
+
+    const getX = (index) => padding.left + (index / (sortedPoints.length - 1)) * chartWidth;
+    const getY = (sales) => height - padding.bottom - (sales / maxSales) * chartHeight;
+
+    let pathD = `M ${getX(0)} ${getY(sortedPoints[0].sales)}`;
+    let areaD = `M ${getX(0)} ${height - padding.bottom} L ${getX(0)} ${getY(sortedPoints[0].sales)}`;
+
+    for (let i = 1; i < sortedPoints.length; i++) {
+      const x = getX(i);
+      const y = getY(sortedPoints[i].sales);
+      pathD += ` L ${x} ${y}`;
+      areaD += ` L ${x} ${y}`;
+    }
+    areaD += ` L ${getX(sortedPoints.length - 1)} ${height - padding.bottom} Z`;
+
+    return (
+      <div className="bg-white p-4 rounded-2xl border mb-4 shadow-sm print:hidden">
+        <div className="flex justify-between items-center mb-3">
+          <h4 className="text-xs font-black text-gray-500 uppercase tracking-wider">📈 Sales Trend Analysis</h4>
+          {hoveredPoint && (
+            <div className="text-[11px] font-bold text-gray-600 bg-gray-50 border px-2.5 py-1 rounded-xl">
+              {hoveredPoint.label}: <span className="text-emerald-600">Rs.{hoveredPoint.sales.toFixed(2)}</span> ({hoveredPoint.count} orders)
+            </div>
+          )}
+        </div>
+        <div className="relative w-full h-[180px] sm:h-[220px]">
+          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible">
+            <defs>
+              <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.25" />
+                <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.00" />
+              </linearGradient>
+            </defs>
+
+            {[0, 0.25, 0.5, 0.75, 1].map((ratio, idx) => {
+              const y = height - padding.bottom - ratio * chartHeight;
+              const value = ratio * maxSales;
+              return (
+                <g key={idx}>
+                  <line 
+                    x1={padding.left} 
+                    y1={y} 
+                    x2={width - padding.right} 
+                    y2={y} 
+                    stroke="#f1f5f9" 
+                    strokeWidth="1"
+                    strokeDasharray="4"
+                  />
+                  <text 
+                    x={padding.left - 10} 
+                    y={y + 3} 
+                    textAnchor="end" 
+                    className="fill-gray-400 font-bold text-[10px]"
+                  >
+                    Rs.{value >= 1000 ? (value / 1000).toFixed(0) + 'k' : value.toFixed(0)}
+                  </text>
+                </g>
+              );
+            })}
+
+            <path d={areaD} fill="url(#chartGrad)" />
+            <path d={pathD} fill="none" stroke="#4f46e5" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+
+            {sortedPoints.map((p, idx) => {
+              const x = getX(idx);
+              const y = getY(p.sales);
+              const isHovered = hoveredPoint && hoveredPoint.label === p.label;
+              return (
+                <g key={idx}>
+                  <circle 
+                    cx={x} 
+                    cy={y} 
+                    r={isHovered ? 6 : 4} 
+                    className="fill-white stroke-indigo-600 stroke-[3px] cursor-pointer transition-all"
+                    onMouseEnter={() => setHoveredPoint(p)}
+                    onMouseLeave={() => setHoveredPoint(null)}
+                  />
+                  {(idx === 0 || idx === sortedPoints.length - 1 || (sortedPoints.length > 2 && idx === Math.floor(sortedPoints.length / 2))) && (
+                    <text 
+                      x={x} 
+                      y={height - padding.bottom + 18} 
+                      textAnchor="middle" 
+                      className="fill-gray-400 font-bold text-[10px]"
+                    >
+                      {p.label}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+    );
+  };
+
+  const handleQuickRestock = async (item) => {
+    const { value: addQty } = await Swal.fire({
+      title: `📦 Quick Restock`,
+      html: `<div class="text-left font-bold text-xs space-y-1 text-gray-500 mb-2">
+               <p>Item: <span class="text-indigo-600">${item.name}</span></p>
+               <p>Current Stock: <span class="text-indigo-600">${item.stockLevel || 0}</span></p>
+             </div>`,
+      input: 'number',
+      inputLabel: 'Quantity to ADD to stock:',
+      inputPlaceholder: 'Enter number (e.g. 50)',
+      showCancelButton: true,
+      confirmButtonColor: '#4f46e5',
+      inputValidator: (value) => {
+        if (!value || isNaN(parseInt(value)) || parseInt(value) <= 0) {
+          return 'Please enter a valid positive number!';
+        }
+      }
+    });
+
+    if (addQty) {
+      const added = parseInt(addQty, 10);
+      const newLevel = (item.stockLevel || 0) + added;
+      await db.items.update(item.id, { stockLevel: newLevel });
+      Swal.fire({
+        icon: 'success',
+        title: 'Stock Replenished!',
+        text: `Successfully added ${added} units of "${item.name}". New Stock: ${newLevel}.`,
+        toast: true,
+        position: 'top-end',
+        showConfirmButton: false,
+        timer: 3000,
+        timerProgressBar: true
+      });
+    }
+  };
+
+  const downloadCSVTemplate = () => {
+    const headers = "Name,Category,Cost Price,Selling Price,Service Charge %,Stock Level\n";
+    const rows = [
+      '"Cheese Burger","Burgers",350.00,500.00,10,50',
+      '"Fried Rice","Rice",450.00,700.00,10,"Unlimited"',
+      '"Coca Cola 250ml","Beverages",150.00,180.00,0,100'
+    ].join("\n");
+    const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", "sapsan_items_import_template.csv");
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleImportCSV = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const text = e.target.result;
+      const lines = text.split(/\r?\n/);
+      if (lines.length <= 1) {
+        Swal.fire({ icon: 'error', title: 'Empty CSV', text: 'The selected CSV file has no data.' });
+        return;
+      }
+
+      Swal.fire({
+        title: 'Importing Items...',
+        text: 'Please wait while we process the CSV file.',
+        allowOutsideClick: false,
+        didOpen: () => {
+          Swal.showLoading();
+        }
+      });
+
+      let successCount = 0;
+      let errorCount = 0;
+
+      try {
+        const categoryMap = new Map();
+        const existingCategories = await db.categories.toArray();
+        existingCategories.forEach(c => categoryMap.set(c.name.toLowerCase().trim(), c.id));
+
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+
+          const cells = [];
+          let current = '';
+          let inQuotes = false;
+          for (let j = 0; j < line.length; j++) {
+            const char = line[j];
+            if (char === '"') {
+              inQuotes = !inQuotes;
+            } else if (char === ',' && !inQuotes) {
+              cells.push(current.trim());
+              current = '';
+            } else {
+              current += char;
+            }
+          }
+          cells.push(current.trim());
+
+          if (cells.length < 4) {
+            errorCount++;
+            continue;
+          }
+
+          const name = cells[0]?.replace(/^"|"$/g, '').trim();
+          const categoryName = cells[1]?.replace(/^"|"$/g, '').trim();
+          const costPrice = parseFloat(cells[2]) || 0;
+          const sellingPrice = parseFloat(cells[3]);
+          const serviceCharge = parseFloat(cells[4]) || 0;
+          const rawStock = cells[5]?.replace(/^"|"$/g, '').trim() || 'Unlimited';
+
+          if (!name || isNaN(sellingPrice) || !categoryName) {
+            errorCount++;
+            continue;
+          }
+
+          let catId = categoryMap.get(categoryName.toLowerCase());
+          if (!catId) {
+            catId = await db.categories.add({
+              name: categoryName,
+              printerType: 'KITCHEN'
+            });
+            categoryMap.set(categoryName.toLowerCase(), catId);
+          }
+
+          const isStockManaged = rawStock.toLowerCase() !== 'unlimited' && !isNaN(parseInt(rawStock));
+          const stockLevel = isStockManaged ? parseInt(rawStock) : 0;
+
+          await db.items.add({
+            name: name,
+            costPrice: costPrice,
+            sellingPrice: sellingPrice,
+            categoryId: catId,
+            serviceChargePercentage: serviceCharge,
+            isStockManaged: isStockManaged,
+            stockLevel: stockLevel
+          });
+          successCount++;
+        }
+
+        Swal.fire({
+          icon: successCount > 0 ? 'success' : 'error',
+          title: 'Import Completed',
+          text: `Successfully imported ${successCount} items. Failed/Skipped ${errorCount} items.`
+        });
+      } catch (err) {
+        console.error(err);
+        Swal.fire({ icon: 'error', title: 'Import Failed', text: 'An error occurred: ' + err.message });
+      }
+
+      event.target.value = '';
+    };
+    reader.readAsText(file);
   };
 
   // ==========================================
@@ -1055,16 +1355,16 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
       </div>
 
       {/* Tab Bar Navigation */}
-      <div className="flex space-x-2 border-b pb-2 mb-4 shrink-0 overflow-x-auto scrollbar-none">
-        <button onClick={() => setActiveSubTab('MAIN_CATEGORIES')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'MAIN_CATEGORIES' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🗂️ Main Categories</button>
-        <button onClick={() => setActiveSubTab('CATEGORIES')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'CATEGORIES' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>📂 Manage Categories</button>
-        <button onClick={() => setActiveSubTab('ITEMS')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'ITEMS' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🍔 Manage Food Items</button>
-        <button onClick={() => setActiveSubTab('REPORTS')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'REPORTS' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>📊 Premium Reports</button>
-        <button onClick={() => setActiveSubTab('PRINTERS')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'PRINTERS' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🖨️ Printer Settings</button>
-        <button onClick={() => setActiveSubTab('BILL_DESIGN')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'BILL_DESIGN' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🧾 Bill Design</button>
-        <button onClick={() => setActiveSubTab('PROFILE')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'PROFILE' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🧑‍💼 Profile Settings</button>
-        <button onClick={() => setActiveSubTab('BACKUP')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'BACKUP' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>💾 Backup &amp; Restore</button>
-        <button onClick={() => setActiveSubTab('NETWORK_SYNC')} className={`px-4 py-2 rounded-xl font-black text-xs whitespace-nowrap ${activeSubTab === 'NETWORK_SYNC' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white border text-gray-600'}`}>🌐 Network Sync</button>
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-9 gap-1.5 border-b pb-3 mb-4 shrink-0">
+        <button onClick={() => setActiveSubTab('MAIN_CATEGORIES')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'MAIN_CATEGORIES' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>🗂️ Main Categories</button>
+        <button onClick={() => setActiveSubTab('CATEGORIES')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'CATEGORIES' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>📂 Manage Categories</button>
+        <button onClick={() => setActiveSubTab('ITEMS')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'ITEMS' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>🍔 Manage Food Items</button>
+        <button onClick={() => setActiveSubTab('REPORTS')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'REPORTS' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>📊 Premium Reports</button>
+        <button onClick={() => setActiveSubTab('PRINTERS')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'PRINTERS' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>🖨️ Printer Settings</button>
+        <button onClick={() => setActiveSubTab('BILL_DESIGN')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'BILL_DESIGN' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>🧾 Bill Design</button>
+        <button onClick={() => setActiveSubTab('PROFILE')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'PROFILE' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>🧑‍💼 Profile Settings</button>
+        <button onClick={() => setActiveSubTab('BACKUP')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'BACKUP' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>💾 Backup &amp; Restore</button>
+        <button onClick={() => setActiveSubTab('NETWORK_SYNC')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'NETWORK_SYNC' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>🌐 Network Sync</button>
       </div>
 
       {/* Main Container Workspaces */}
@@ -1201,47 +1501,121 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                   </div>
                 )}
 
+                <div className="border rounded-xl p-2.5 bg-gray-50/50 space-y-2">
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      checked={isStockManaged} 
+                      onChange={(e) => setIsStockManaged(e.target.checked)} 
+                      className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" 
+                    />
+                    <span className="text-xs font-bold text-gray-700">Track Inventory (Stock)</span>
+                  </label>
+                  
+                  {isStockManaged && (
+                    <div>
+                      <label className="block text-[10px] font-bold text-gray-500 mb-1">Stock Quantity</label>
+                      <input 
+                        type="number" 
+                        min="0" 
+                        step="1"
+                        value={stockLevel} 
+                        onChange={(e) => setStockLevel(e.target.value)} 
+                        className="w-full p-2.5 border rounded-xl font-bold text-xs bg-white" 
+                        placeholder="0"
+                        required
+                      />
+                    </div>
+                  )}
+                </div>
+
                 <button type="submit" className="w-full bg-emerald-600 text-white p-3 rounded-xl font-black text-xs">Save Item</button>
               </form>
             </div>
-            <div className="md:col-span-8 bg-white p-4 rounded-2xl border h-full overflow-y-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-gray-50 border-b">
-                  <tr>
-                    <th className="p-3">Item Name</th>
-                    <th className="p-3">Cost Price</th>
-                    <th className="p-3">Selling Price</th>
-                    <th className="p-3">Service Chg.</th>
-                    <th className="p-3 text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map(i => (
-                    <tr key={i.id} className="border-b">
-                      <td className="p-3 font-bold">{i.name}</td>
-                      <td className="p-3 text-gray-500">Rs.{(i.costPrice || 0).toFixed ? i.costPrice.toFixed(2) : i.costPrice || '0.00'}</td>
-                      <td className="p-3">Rs.{i.sellingPrice}</td>
-                      <td className="p-3">{i.serviceChargePercentage || 0}%</td>
-                      <td className="p-3 text-center space-x-2">
-                        <button
-                          onClick={() => {
-                            setEditingItemId(i.id);
-                            setItemName(i.name);
-                            setItemCostPrice(i.costPrice !== undefined && i.costPrice !== null ? i.costPrice.toString() : '');
-                            setItemPrice(i.sellingPrice.toString());
-                            setItemCategory(i.categoryId.toString());
-                            setServiceCharge(i.serviceChargePercentage.toString());
-                          }}
-                          className="text-indigo-600 font-bold hover:underline"
-                        >
-                          Edit
-                        </button>
-                        <button onClick={() => handleDeleteItem(i.id)} className="text-red-500 font-bold hover:underline">Delete</button>
-                      </td>
+            <div className="md:col-span-8 bg-white p-4 rounded-2xl border h-full flex flex-col overflow-y-auto">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3 pb-3 border-b">
+                <h3 className="text-sm font-black text-gray-700 uppercase">🍔 Food Items List</h3>
+                <div className="flex items-center space-x-2">
+                  <button 
+                    onClick={downloadCSVTemplate}
+                    type="button"
+                    className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-xl font-bold text-[11px] flex items-center gap-1 border transition"
+                  >
+                    📥 Template CSV
+                  </button>
+                  <label className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-xl font-bold text-[11px] flex items-center gap-1 cursor-pointer transition">
+                    📤 Import CSV
+                    <input 
+                      type="file" 
+                      accept=".csv" 
+                      onChange={handleImportCSV} 
+                      className="hidden" 
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-gray-50 border-b">
+                    <tr>
+                      <th className="p-3">Item Name</th>
+                      <th className="p-3">Cost Price</th>
+                      <th className="p-3">Selling Price</th>
+                      <th className="p-3">Service Chg.</th>
+                      <th className="p-3">Stock</th>
+                      <th className="p-3 text-center">Action</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {items.map(i => (
+                      <tr key={i.id} className="border-b">
+                        <td className="p-3 font-bold">{i.name}</td>
+                        <td className="p-3 text-gray-500">Rs.{(i.costPrice || 0).toFixed ? i.costPrice.toFixed(2) : i.costPrice || '0.00'}</td>
+                        <td className="p-3">Rs.{i.sellingPrice}</td>
+                        <td className="p-3">{i.serviceChargePercentage || 0}%</td>
+                        <td className="p-3">
+                          {i.isStockManaged ? (
+                            <div className="flex items-center space-x-1.5">
+                              {i.stockLevel <= 0 ? (
+                                <span className="text-red-500 font-bold bg-red-50 px-2 py-0.5 rounded-full text-[10px] border border-red-100">Out of Stock</span>
+                              ) : (
+                                <span className="text-indigo-600 font-bold bg-indigo-50 px-2 py-0.5 rounded-full text-[10px] border border-indigo-100">{i.stockLevel} left</span>
+                              )}
+                              <button 
+                                onClick={() => handleQuickRestock(i)} 
+                                title="Quick Restock" 
+                                className="text-[10px] bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-200 px-1.5 py-0.5 rounded-lg font-black transition active:scale-95"
+                              >
+                                ➕ Restock
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-gray-400 font-bold">Unlimited</span>
+                          )}
+                        </td>
+                        <td className="p-3 text-center space-x-2">
+                          <button
+                            onClick={() => {
+                              setEditingItemId(i.id);
+                              setItemName(i.name);
+                              setItemCostPrice(i.costPrice !== undefined && i.costPrice !== null ? i.costPrice.toString() : '');
+                              setItemPrice(i.sellingPrice.toString());
+                              setItemCategory(i.categoryId.toString());
+                              setServiceCharge(i.serviceChargePercentage.toString());
+                              setIsStockManaged(!!i.isStockManaged);
+                              setStockLevel(i.stockLevel !== undefined && i.stockLevel !== null ? i.stockLevel.toString() : '');
+                            }}
+                            className="text-indigo-600 font-bold hover:underline"
+                          >
+                            Edit
+                          </button>
+                          <button onClick={() => handleDeleteItem(i.id)} className="text-red-500 font-bold hover:underline">Delete</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </>
         )}
@@ -1567,99 +1941,379 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                   </table>
                 )}
 
-                {filteredOrders.length > 0 && reportType === 'PAYMENT_METHOD' && (
-                  <div className="space-y-3 p-2">
-                    {paymentMethodList.map((p, i) => (
-                      <div key={i}>
-                        <div className="flex justify-between text-[11px] font-bold mb-1">
-                          <span>{p.method === 'CASH' ? '💵' : p.method === 'CARD' ? '💳' : '🏦'} {p.method}</span>
-                          <span>Rs.{p.amount.toFixed(2)} <span className="text-gray-400">({p.percent.toFixed(1)}%)</span></span>
-                        </div>
-                        <div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
-                          <div className="bg-indigo-600 h-2.5 rounded-full" style={{ width: `${p.percent}%` }}></div>
-                        </div>
-                      </div>
-                    ))}
+                {filteredOrders.length === 0 && reportType !== 'DELETED_ITEMS' && reportType !== 'DELETED_BILLS' && (
+                  <div className="text-center text-gray-400 font-bold py-12">No data available for the selected filters.</div>
+                )}
+
+                {/* SALES SUMMARY */}
+                {filteredOrders.length > 0 && reportType === 'SUMMARY' && (
+                  <div className="space-y-4">
+                    {renderSalesTrendChart()}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="bg-gray-100 sticky top-0">
+                            {sortableTh('Date / Time', 'settledDate')}
+                            <th className="p-2">Bill No</th>
+                            <th className="p-2">Table</th>
+                            <th className="p-2">Cashier</th>
+                            <th className="p-2">Payment</th>
+                            {sortableTh('Net Total', 'netTotal', 'text-right')}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sortedInvoiceList.map((o, i) => (
+                            <tr key={i} className="border-b hover:bg-gray-50">
+                              <td className="p-2">{o.settledDate ? new Date(o.settledDate).toLocaleString() : '-'}</td>
+                              <td className="p-2 text-gray-500">{o.dailyOrderNumber != null ? `#${o.dailyOrderNumber}` : '-'}</td>
+                              <td className="p-2 font-bold">{o.tableNumber || 'Walk-in'}</td>
+                              <td className="p-2">{o.cashierName || 'Admin Cashier'}</td>
+                              <td className="p-2">{o.paymentMethod || '-'}</td>
+                              <td className="p-2 text-right font-bold text-emerald-600">Rs.{(o.netTotal || 0).toFixed(2)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
 
-                {filteredOrders.length > 0 && reportType === 'PROFIT' && (
-                  <div className="p-2 space-y-3">
-                    <table className="w-full text-left">
-                      <tbody>
-                        <tr className="border-b"><td className="p-2 font-bold text-gray-600">Gross Revenue (Net Sales)</td><td className="p-2 text-right font-bold">Rs.{totalNetSales.toFixed(2)}</td></tr>
-                        <tr className="border-b"><td className="p-2 font-bold text-gray-600">Less: Cost of Goods Sold</td><td className="p-2 text-right font-bold text-red-500">- Rs.{totalCostOfSales.toFixed(2)}</td></tr>
-                        <tr className="border-b bg-emerald-50"><td className="p-2 font-black text-emerald-700">Net Profit</td><td className="p-2 text-right font-black text-emerald-700">Rs.{totalCalculatedProfit.toFixed(2)}</td></tr>
-                        <tr><td className="p-2 font-bold text-gray-600">Profit Margin</td><td className="p-2 text-right font-bold">{profitMarginPercent.toFixed(1)}%</td></tr>
-                      </tbody>
-                    </table>
-                    <div className="font-black text-gray-500 uppercase text-[11px] pt-1">Profit Breakdown by Item</div>
+                {/* SALES BY PRODUCT */}
+                {filteredOrders.length > 0 && reportType === 'PRODUCT' && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 print:hidden">
+                      {productSalesList.slice(0, 3).map((p, i) => (
+                        <div key={i} className="bg-gradient-to-br from-indigo-50 to-indigo-100/50 p-4 rounded-2xl border border-indigo-200 relative overflow-hidden">
+                          <div className="absolute top-2 right-3 text-3xl font-black opacity-10">#{i + 1}</div>
+                          <div className="text-[10px] font-black text-indigo-500 uppercase tracking-wider">Top Product #{i + 1}</div>
+                          <h4 className="font-black text-sm text-gray-800 mt-1">{p.name}</h4>
+                          <div className="flex justify-between items-end mt-4">
+                            <div>
+                              <span className="text-[10px] font-bold text-gray-400 block">Sold</span>
+                              <span className="font-black text-gray-700 text-sm">{p.qty} units</span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-[10px] font-bold text-gray-400 block">Revenue</span>
+                              <span className="font-black text-indigo-700 text-sm">Rs.{p.revenue.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border rounded-xl overflow-hidden">
+                        <thead>
+                          <tr className="bg-gray-50 border-b text-gray-500">
+                            <th className="p-3">Rank</th>
+                            <th className="p-3">Product Name</th>
+                            <th className="p-3 text-right">Qty Sold</th>
+                            <th className="p-3 text-right">Revenue</th>
+                            <th className="p-3 text-right">% of Total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {productSalesList.map((p, i) => (
+                            <tr key={i} className="border-b hover:bg-gray-50 transition-colors">
+                              <td className="p-3 font-bold text-gray-400">#{i + 1}</td>
+                              <td className="p-3 font-bold text-gray-800">{p.name}</td>
+                              <td className="p-3 text-right font-black text-gray-600">{p.qty}</td>
+                              <td className="p-3 text-right font-black text-emerald-600">Rs.{p.revenue.toFixed(2)}</td>
+                              <td className="p-3 text-right font-bold text-gray-400">{totalNetSales > 0 ? ((p.revenue / totalNetSales) * 100).toFixed(1) : '0.0'}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* SALES BY CATEGORY */}
+                {filteredOrders.length > 0 && reportType === 'CATEGORY' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {categorySalesList.map((c, i) => {
+                      const percent = totalNetSales > 0 ? ((c.revenue / totalNetSales) * 100) : 0;
+                      return (
+                        <div key={i} className="bg-white p-4 rounded-2xl border hover:shadow-md transition duration-200 flex flex-col justify-between space-y-3">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="text-[10px] font-black text-gray-400 uppercase">Category</span>
+                              <h4 className="font-black text-sm text-gray-800 mt-0.5">{c.name}</h4>
+                            </div>
+                            <span className="bg-indigo-50 text-indigo-700 text-[10px] font-black px-2 py-0.5 rounded-full">{percent.toFixed(1)}%</span>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[11px] font-bold text-gray-500">
+                              <span>Revenue</span>
+                              <span className="text-emerald-600">Rs.{c.revenue.toFixed(2)}</span>
+                            </div>
+                            <div className="w-full bg-gray-50 border rounded-full h-2 overflow-hidden">
+                              <div className="bg-indigo-600 h-2 rounded-full" style={{ width: `${percent}%` }}></div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* BEST SELLING PRODUCTS */}
+                {filteredOrders.length > 0 && reportType === 'BEST_SELLING' && (
+                  <div className="overflow-x-auto">
                     <table className="w-full text-left">
                       <thead>
-                        <tr className="bg-gray-100">
+                        <tr className="bg-gray-100 sticky top-0">
+                          <th className="p-2">#</th>
                           {sortableTh('Item', 'name')}
-                          {sortableTh('Qty', 'qty', 'text-right')}
+                          {sortableTh('Qty Sold', 'qty', 'text-right')}
                           {sortableTh('Revenue', 'revenue', 'text-right')}
                         </tr>
                       </thead>
                       <tbody>
-                        {productSalesList.map((p, i) => (
-                          <tr key={i} className="border-b"><td className="p-2 font-bold">{p.name}</td><td className="p-2 text-right">{p.qty}</td><td className="p-2 text-right font-bold text-emerald-600">Rs.{p.revenue.toFixed(2)}</td></tr>
+                        {bestSellersList.map((p, i) => (
+                          <tr key={i} className="border-b hover:bg-gray-50">
+                            <td className="p-2 font-black text-gray-400">{i + 1}</td>
+                            <td className="p-2 font-bold">{i === 0 ? '🔥 ' : ''}{p.name}</td>
+                            <td className="p-2 text-right font-bold">{p.qty}</td>
+                            <td className="p-2 text-right font-bold text-emerald-600">Rs.{p.revenue.toFixed(2)}</td>
+                          </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
                 )}
 
-                {reportType === 'DISCOUNT' && (
-                  discountedOrdersList.length === 0 ? (
-                    <div className="text-center text-gray-400 font-bold py-12">No discounted orders found for the selected filters.</div>
-                  ) : (
+                {/* SALES BY TABLE / CUSTOMER */}
+                {filteredOrders.length > 0 && reportType === 'CUSTOMER' && (
+                  <div className="overflow-x-auto">
                     <table className="w-full text-left">
                       <thead>
                         <tr className="bg-gray-100 sticky top-0">
-                          {sortableTh('Date', 'settledDate')}
-                          <th className="p-2">Table</th>
-                          {sortableTh('Discount', 'discountAmount', 'text-right')}
-                          {sortableTh('Net Total', 'netTotal', 'text-right')}
+                          {sortableTh('Table / Customer', 'name')}
+                          {sortableTh('Orders', 'count', 'text-right')}
+                          {sortableTh('Revenue', 'revenue', 'text-right')}
                         </tr>
                       </thead>
                       <tbody>
-                        {discountedOrdersList.map((o, i) => (
+                        {customerSalesList.map((c, i) => (
                           <tr key={i} className="border-b hover:bg-gray-50">
-                            <td className="p-2">{o.settledDate ? new Date(o.settledDate).toLocaleString() : '-'}</td>
-                            <td className="p-2 font-bold">{o.tableNumber || 'Walk-in'}</td>
-                            <td className="p-2 text-right font-bold text-red-500">- Rs.{(o.discountAmount || 0).toFixed(2)}</td>
-                            <td className="p-2 text-right font-bold">Rs.{(o.netTotal || 0).toFixed(2)}</td>
+                            <td className="p-2 font-bold">🪑 {c.name}</td>
+                            <td className="p-2 text-right">{c.count}</td>
+                            <td className="p-2 text-right font-bold text-emerald-600">Rs.{c.revenue.toFixed(2)}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+
+                {/* SALES BY CASHIER */}
+                {filteredOrders.length > 0 && reportType === 'CASHIER' && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="bg-gray-100 sticky top-0">
+                          {sortableTh('Cashier', 'name')}
+                          {sortableTh('Orders', 'count', 'text-right')}
+                          {sortableTh('Revenue', 'revenue', 'text-right')}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cashierSalesList.map((c, i) => (
+                          <tr key={i} className="border-b hover:bg-gray-50">
+                            <td className="p-2 font-bold">🧑‍💼 {c.name}</td>
+                            <td className="p-2 text-right">{c.count}</td>
+                            <td className="p-2 text-right font-bold text-emerald-600">Rs.{c.revenue.toFixed(2)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* PAYMENT METHODS PORTLET */}
+                {filteredOrders.length > 0 && reportType === 'PAYMENT_METHOD' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-2">
+                    {paymentMethodList.map((p, i) => {
+                      const colors = 
+                        p.method === 'CASH' ? { bg: 'bg-emerald-50 border-emerald-100', text: 'text-emerald-700', bar: 'bg-emerald-600' } :
+                        p.method === 'CARD' ? { bg: 'bg-blue-50 border-blue-100', text: 'text-blue-700', bar: 'bg-blue-600' } :
+                        { bg: 'bg-amber-50 border-amber-100', text: 'text-amber-700', bar: 'bg-amber-600' };
+
+                      return (
+                        <div key={i} className={`p-4 rounded-2xl border ${colors.bg} space-y-3 shadow-sm`}>
+                          <div className="flex justify-between items-center">
+                            <span className="text-sm font-black">{p.method === 'CASH' ? '💵 Cash' : p.method === 'CARD' ? '💳 Card' : '🏦 Bank Transfer'}</span>
+                            <span className={`font-black text-sm ${colors.text}`}>Rs.{p.amount.toFixed(2)}</span>
+                          </div>
+                          <div className="w-full bg-white/60 rounded-full h-3 overflow-hidden border border-black/5">
+                            <div className={`${colors.bar} h-3 rounded-full`} style={{ width: `${p.percent}%` }}></div>
+                          </div>
+                          <div className="text-[11px] font-bold text-gray-500 text-right">
+                            {p.percent.toFixed(1)}% of total sales
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* PROFIT & LOSS BREAKDOWN */}
+                {filteredOrders.length > 0 && reportType === 'PROFIT' && (
+                  <div className="space-y-4 p-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-2xl shadow-sm">
+                        <span className="text-[10px] font-black text-emerald-600 uppercase">Gross Revenue (Net Sales)</span>
+                        <div className="text-xl font-black text-emerald-800 mt-1">Rs.{totalNetSales.toFixed(2)}</div>
+                      </div>
+                      <div className="bg-red-50 border border-red-200 p-4 rounded-2xl shadow-sm">
+                        <span className="text-[10px] font-black text-red-600 uppercase">Cost of Goods Sold (COGS)</span>
+                        <div className="text-xl font-black text-red-800 mt-1">- Rs.{totalCostOfSales.toFixed(2)}</div>
+                      </div>
+                      <div className="bg-indigo-50 border border-indigo-200 p-4 rounded-2xl shadow-sm">
+                        <span className="text-[10px] font-black text-indigo-600 uppercase">Net Profit Margin</span>
+                        <div className="text-xl font-black text-indigo-800 mt-1">{profitMarginPercent.toFixed(1)}%</div>
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-4 rounded-2xl border">
+                      <h4 className="font-black text-xs text-gray-700 uppercase mb-3">📦 Profitability Breakdown by Item</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="bg-gray-50 border-b text-gray-500">
+                              <th className="p-3">Product Name</th>
+                              <th className="p-3 text-right">Qty</th>
+                              <th className="p-3 text-right">Revenue</th>
+                              <th className="p-3 text-right">Est. Cost</th>
+                              <th className="p-3 text-right">Net Profit</th>
+                              <th className="p-3 text-right">Margin</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {productSalesList.map((p, i) => {
+                              const matchedItem = items.find(item => item.name === p.name);
+                              const unitCost = matchedItem && matchedItem.costPrice ? matchedItem.costPrice : (p.revenue / p.qty * 0.6);
+                              const totalCost = unitCost * p.qty;
+                              const profit = p.revenue - totalCost;
+                              const margin = p.revenue > 0 ? (profit / p.revenue * 100) : 0;
+
+                              return (
+                                <tr key={i} className="border-b hover:bg-gray-50 transition-colors">
+                                  <td className="p-3 font-bold text-gray-800">{p.name}</td>
+                                  <td className="p-3 text-right">{p.qty}</td>
+                                  <td className="p-3 text-right font-bold">Rs.{p.revenue.toFixed(2)}</td>
+                                  <td className="p-3 text-right text-gray-400">Rs.{totalCost.toFixed(2)}</td>
+                                  <td className="p-3 text-right font-black text-emerald-600">Rs.{profit.toFixed(2)}</td>
+                                  <td className={`p-3 text-right font-bold ${margin >= 40 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                                    {margin.toFixed(0)}%
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* DISCOUNT TRACKER */}
+                {reportType === 'DISCOUNT' && (
+                  discountedOrdersList.length === 0 ? (
+                    <div className="text-center text-gray-400 font-bold py-12">No discounted orders found for the selected filters.</div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="bg-gray-100 sticky top-0">
+                            {sortableTh('Date', 'settledDate')}
+                            <th className="p-2">Table</th>
+                            {sortableTh('Discount', 'discountAmount', 'text-right')}
+                            {sortableTh('Net Total', 'netTotal', 'text-right')}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {discountedOrdersList.map((o, i) => (
+                            <tr key={i} className="border-b hover:bg-gray-50">
+                              <td className="p-2">{o.settledDate ? new Date(o.settledDate).toLocaleString() : '-'}</td>
+                              <td className="p-2 font-bold">{o.tableNumber || 'Walk-in'}</td>
+                              <td className="p-2 text-right font-bold text-red-500">- Rs.{(o.discountAmount || 0).toFixed(2)}</td>
+                              <td className="p-2 text-right font-bold">Rs.{(o.netTotal || 0).toFixed(2)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )
                 )}
 
+                {/* INTERACTIVE INVOICE INSPECTOR ACCORDION */}
                 {filteredOrders.length > 0 && reportType === 'INVOICE' && (
-                  <div className="space-y-2">
-                    {sortedInvoiceList.map((o, i) => (
-                      <div key={i} className="border rounded-lg p-2">
-                        <div className="flex justify-between items-center mb-1">
-                          <span className="font-black text-gray-700">
-                            🧾 {o.tableNumber || 'Walk-in'} {o.dailyOrderNumber != null && <span className="text-indigo-500">· #{o.dailyOrderNumber}</span>}
-                            <span className="text-gray-400 font-bold"> · {o.settledDate ? new Date(o.settledDate).toLocaleString() : '-'}</span>
-                          </span>
-                          <span className="font-black text-emerald-600">Rs.{(o.netTotal || 0).toFixed(2)}</span>
+                  <div className="space-y-3">
+                    {sortedInvoiceList.map((o, i) => {
+                      const isExpanded = expandedOrderId === o.id;
+                      return (
+                        <div key={i} className={`border rounded-2xl transition duration-200 bg-white ${isExpanded ? 'ring-2 ring-indigo-500 shadow-md' : 'hover:shadow-sm'}`}>
+                          <div 
+                            onClick={() => setExpandedOrderId(isExpanded ? null : o.id)}
+                            className="p-4 flex flex-wrap justify-between items-center cursor-pointer gap-2"
+                          >
+                            <div className="flex items-center space-x-3">
+                              <span className="text-xl">🧾</span>
+                              <div>
+                                <h4 className="font-black text-sm text-gray-800">
+                                  {o.tableNumber || 'Walk-in'} 
+                                  {o.dailyOrderNumber != null && <span className="text-indigo-600 ml-1.5">#{o.dailyOrderNumber}</span>}
+                                </h4>
+                                <p className="text-[10px] font-bold text-gray-400 mt-0.5">
+                                  {o.settledDate ? new Date(o.settledDate).toLocaleString() : '-'} · {o.items?.length || 0} items
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center space-x-3">
+                              <span className="bg-gray-100 text-gray-700 font-black text-[10px] px-2.5 py-1 rounded-lg">
+                                {o.paymentMethod || 'CASH'}
+                              </span>
+                              <span className="font-black text-emerald-600 text-sm">
+                                Rs.{(o.netTotal || 0).toFixed(2)}
+                              </span>
+                              <span className="text-gray-400 text-xs">{isExpanded ? '▲' : '▼'}</span>
+                            </div>
+                          </div>
+
+                          {isExpanded && (
+                            <div className="px-4 pb-4 pt-3 border-t bg-gray-50/50 rounded-b-2xl space-y-3">
+                              <div className="bg-white border rounded-xl p-4 shadow-sm max-w-sm mx-auto font-mono text-xs text-gray-600 space-y-2">
+                                <div className="text-center font-black text-gray-800 uppercase tracking-widest border-b pb-2">
+                                  {getBillDesignSettings().storeName || 'SAPSAN POS'}
+                                </div>
+                                <div className="space-y-1 py-2 border-b">
+                                  <div className="flex justify-between"><span>Bill Number:</span><span>#{o.dailyOrderNumber || 'N/A'}</span></div>
+                                  <div className="flex justify-between"><span>Date/Time:</span><span>{o.settledDate ? new Date(o.settledDate).toLocaleString() : 'N/A'}</span></div>
+                                  <div className="flex justify-between"><span>Table:</span><span>{o.tableNumber || 'Walk-in'}</span></div>
+                                  <div className="flex justify-between"><span>Cashier:</span><span>{o.cashierName || 'Admin'}</span></div>
+                                </div>
+                                <div className="border-b py-2 space-y-1">
+                                  {(o.items || []).map((it, idx) => (
+                                    <div key={idx} className="flex justify-between text-gray-700">
+                                      <span>{it.name} x{it.quantity}</span>
+                                      <span>Rs.{(it.sellingPrice * it.quantity).toFixed(2)}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="space-y-1 pt-2">
+                                  <div className="flex justify-between"><span>Subtotal:</span><span>Rs.{(o.subTotal || 0).toFixed(2)}</span></div>
+                                  {(o.totalServiceCharge || 0) > 0 && <div className="flex justify-between text-indigo-600"><span>Service Charge:</span><span>Rs.{o.totalServiceCharge.toFixed(2)}</span></div>}
+                                  {(o.discountAmount || 0) > 0 && <div className="flex justify-between text-red-500"><span>Discount:</span><span>- Rs.{o.discountAmount.toFixed(2)}</span></div>}
+                                  <div className="flex justify-between font-black text-gray-800 border-t pt-2 mt-1"><span>Net Total:</span><span>Rs.{(o.netTotal || 0).toFixed(2)}</span></div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <div className="text-[11px] text-gray-500">
-                          {(o.items || []).map((it, idx) => (
-                            <span key={idx}>{it.name} × {it.quantity}{idx < o.items.length - 1 ? ', ' : ''}</span>
-                          ))}
-                        </div>
-                        <div className="text-[10px] text-gray-400 mt-1 flex justify-between">
-                          <span>Cashier: {o.cashierName || 'Admin Cashier'} · Payment: {o.paymentMethod || '-'}</span>
-                          {(o.discountAmount || 0) > 0 && <span className="text-red-400">Discount: Rs.{o.discountAmount.toFixed(2)}</span>}
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 

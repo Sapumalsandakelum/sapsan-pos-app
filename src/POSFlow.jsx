@@ -23,6 +23,7 @@ export default function POSFlow({ currentUser, onLogout, activeDaySession }) {
     return (
       <SubEntitySelector
         mainCategory={mainCategory}
+        currentUser={currentUser}
         onSelectEntity={setEntityName}
         onBack={() => setMainCategory(null)}
       />

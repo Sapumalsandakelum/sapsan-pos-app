@@ -6,19 +6,32 @@
 import Dexie from 'dexie';
 
 export const daySessionDb = new Dexie('SapSanPOS_DaySessions');
-daySessionDb.version(1).stores({
-  sessions: '++id, dateKey'
+daySessionDb.version(2).stores({
+  sessions: '++id, dateKey, status'
 });
 
 const todayKey = () => new Date().toISOString().split('T')[0];
 
-// Call once when a user logs in — starts today's session automatically if
-// one doesn't already exist (e.g. first login of a new day).
-export const ensureDayStarted = async (username) => {
-  const dateKey = todayKey();
-  const existing = await daySessionDb.sessions.where('dateKey').equals(dateKey).first();
-  if (existing) return existing;
+// Returns the currently active (OPEN) day session if any exists
+export const getActiveSession = async () => {
+  return (await daySessionDb.sessions.where('status').equals('OPEN').first()) || null;
+};
 
+// Returns the most recently started session, whether OPEN or CLOSED
+export const getMostRecentSession = async () => {
+  const all = await daySessionDb.sessions.toArray();
+  if (all.length === 0) return null;
+  // Sort descending by startedAt
+  all.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+  return all[0];
+};
+
+// Manually start a new day session
+export const startNewDaySession = async (username) => {
+  const openSession = await getActiveSession();
+  if (openSession) return openSession;
+
+  const dateKey = todayKey();
   const id = await daySessionDb.sessions.add({
     dateKey,
     startedAt: new Date().toISOString(),
@@ -33,18 +46,20 @@ export const ensureDayStarted = async (username) => {
   return await daySessionDb.sessions.get(id);
 };
 
-export const getCurrentDaySession = async () => {
-  const dateKey = todayKey();
-  return (await daySessionDb.sessions.where('dateKey').equals(dateKey).first()) || null;
+// Maintained for backward compatibility or direct calls
+export const ensureDayStarted = async (username) => {
+  return await startNewDaySession(username);
 };
 
-// Closes today's session — this is a reporting/audit checkpoint (records who
-// closed the day and when, plus cash reconciliation if provided). It does
-// NOT block new orders from being created afterward — sales can continue
-// normally; this just formally marks the close-of-day moment.
+// Returns the session for the Day End screen (the most recent session)
+export const getCurrentDaySession = async () => {
+  return await getMostRecentSession();
+};
+
+// Closes the currently active open session (records who closed the day and when, plus cash reconciliation if provided)
 export const closeDay = async (username, cashData = {}) => {
-  const session = await getCurrentDaySession();
-  if (!session) throw new Error('No open day session found for today.');
+  const session = await getActiveSession();
+  if (!session) throw new Error('No open day session found.');
 
   const updates = {
     endedAt: new Date().toISOString(),

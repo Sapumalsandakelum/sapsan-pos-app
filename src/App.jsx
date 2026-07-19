@@ -8,7 +8,7 @@ import DayEndReport from './DayEndReport';
 import { getSession, clearSession } from './authUtils';
 import { runDailyBackupIfNeeded } from './backupUtils';
 import { initLanSync, onSyncConnectionChange, getSyncStatus } from './lanSync';
-import { ensureDayStarted } from './dayEndUtils';
+import { getActiveSession, startNewDaySession } from './dayEndUtils';
 import LicenseGate from './LicenseGate';
 import Swal from 'sweetalert2';
 
@@ -39,11 +39,88 @@ function AppContent() {
     initLanSync();
   }, []);
 
-  // 📅 Starts today's Day Session the moment someone logs in, if it hasn't
-  // already been started today by anyone else. No-ops if already started.
+  const [activeDaySession, setActiveDaySession] = useState(null);
+  const [loadingSession, setLoadingSession] = useState(true);
+
+  const checkActiveSession = async () => {
+    if (!session) {
+      setLoadingSession(false);
+      return;
+    }
+    try {
+      const active = await getActiveSession();
+      setActiveDaySession(active);
+      if (active) {
+        const todayStr = new Date().toISOString().split('T')[0];
+        if (active.dateKey !== todayStr) {
+          Swal.fire({
+            title: '⚠️ Previous Day Not Closed!',
+            html: `The business day for <b>${active.dateKey}</b> (started by ${active.startedBy}) was not closed.<br/><br/>Please perform Day End to close it.`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: '📊 Go to Day End',
+            cancelButtonText: '🔄 Continue Shift',
+            confirmButtonColor: '#4f46e5',
+            cancelButtonColor: '#6b7280'
+          }).then((result) => {
+            if (result.isConfirmed) {
+              setCurrentScreen('DAY_END');
+            }
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Failed to check active session', err);
+    } finally {
+      setLoadingSession(false);
+    }
+  };
+
+  const triggerStartDayPrompt = () => {
+    if (!session) return;
+    const todayStr = new Date().toISOString().split('T')[0];
+    Swal.fire({
+      title: '🟢 Start Business Day?',
+      html: `Would you like to start the business day for <b>${todayStr}</b>?`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: '🚀 Start Day',
+      cancelButtonText: 'Cancel',
+      confirmButtonColor: '#059669',
+      cancelButtonColor: '#6b7280'
+    }).then(async (result) => {
+      if (result.isConfirmed) {
+        try {
+          const newSession = await startNewDaySession(session.username);
+          setActiveDaySession(newSession);
+          Swal.fire({
+            title: 'Day Started! ✅',
+            text: `Business day for ${newSession.dateKey} is now open.`,
+            icon: 'success',
+            timer: 1500,
+            showConfirmButton: false
+          });
+        } catch (err) {
+          Swal.fire({
+            title: 'Error starting day',
+            text: err.message,
+            icon: 'error'
+          });
+        }
+      }
+    });
+  };
+
   useEffect(() => {
-    if (session) ensureDayStarted(session.username);
+    checkActiveSession();
   }, [session]);
+
+  // Automatically prompt to start the day when entering the Billing Screen if day session is not started
+  useEffect(() => {
+    if (currentScreen === 'BILLING' && !activeDaySession && !loadingSession) {
+      triggerStartDayPrompt();
+    }
+  }, [currentScreen, activeDaySession, loadingSession]);
 
   // 🔐 Not logged in yet (or no accounts exist at all) — show login / first-time setup
   if (!session) {
@@ -161,11 +238,39 @@ function AppContent() {
       </nav>
 
       {/* 📲 SCREEN RENDERING */}
-      <main className="flex-1 overflow-hidden">
-        {currentScreen === 'BILLING' && <POSFlow key={billingResetKey} currentUser={session} onLogout={handleLogout} />}
+      <main className="flex-1 overflow-hidden flex flex-col h-full">
+        {currentScreen === 'BILLING' && (
+          activeDaySession ? (
+            <POSFlow key={billingResetKey} currentUser={session} onLogout={handleLogout} activeDaySession={activeDaySession} />
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center bg-gray-50 p-6">
+              <div className="max-w-md w-full text-center space-y-6 bg-white p-8 rounded-3xl border border-gray-200 shadow-xl relative overflow-hidden transition-all duration-300 hover:shadow-2xl">
+                <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-emerald-400 via-teal-500 to-indigo-600"></div>
+                <div className="inline-flex items-center justify-center w-24 h-24 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100 text-5xl mb-2">
+                  🗓️
+                </div>
+                <div className="space-y-2">
+                  <h2 className="text-2xl font-black text-gray-800 tracking-tight">Business Day Not Started</h2>
+                  <p className="text-xs font-semibold text-gray-500 leading-relaxed max-w-sm mx-auto">
+                    You need to start the business day before you can place orders, print tickets, or manage billing.
+                  </p>
+                </div>
+                <div className="pt-2">
+                  <button
+                    onClick={triggerStartDayPrompt}
+                    className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white rounded-2xl font-black text-sm shadow-md hover:shadow-lg transition-all duration-150 flex items-center justify-center space-x-2 group cursor-pointer"
+                  >
+                    <span>🚀</span>
+                    <span>Start Business Day</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )
+        )}
 
         {currentScreen === 'DAY_END' && (
-          <DayEndReport onBack={() => setCurrentScreen('BILLING')} />
+          <DayEndReport onBack={() => setCurrentScreen('BILLING')} onDayClosed={checkActiveSession} />
         )}
 
         {currentScreen === 'DASHBOARD' && isAdmin && (

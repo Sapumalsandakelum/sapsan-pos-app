@@ -8,7 +8,7 @@ import { logDeletedItem, logDeletedBill } from './auditUtils';
 
 // mainCategory: { id, name, icon, usesTables, serviceChargeEnabled }
 // entityName: the selected table/order slot name, e.g. "Table 1" or "Order 01"
-export default function BillingScreen({ mainCategory, entityName, onBack, currentUser }) {
+export default function BillingScreen({ mainCategory, entityName, onBack, currentUser, activeDaySession }) {
   const isTakeawayLike = !mainCategory.usesTables; // controls "Table:"/"Type:" labels on receipts
   const serviceChargeApplies = !!mainCategory.serviceChargeEnabled;
 
@@ -256,7 +256,7 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
         savedOrderId = existingOrder.id;
       } else {
         // Brand new order — assign the next number in today's sequence (auto-resets daily)
-        orderNumber = getNextDailyOrderNumber();
+        orderNumber = getNextDailyOrderNumber(activeDaySession?.dateKey);
         savedOrderId = await db.orders.add({
           orderDate: new Date(),
           tableNumber: entityName,

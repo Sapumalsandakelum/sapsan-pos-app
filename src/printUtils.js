@@ -73,15 +73,15 @@ const getTodayDateString = () => {
 
 // Call this exactly ONCE per NEW order (not on re-save/update) to assign it a permanent
 // order number for the day. The very first order of each day starts back at 1.
-export const getNextDailyOrderNumber = () => {
-  const today = getTodayDateString();
-  let counter = { date: today, lastNumber: 0 };
+export const getNextDailyOrderNumber = (sessionDateKey) => {
+  const dayKey = sessionDateKey || getTodayDateString();
+  let counter = { date: dayKey, lastNumber: 0 };
   try {
     const saved = localStorage.getItem(DAILY_ORDER_COUNTER_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (parsed.date === today) counter = parsed; // same day — keep counting up
-      // different day (or no saved value) — counter above already starts fresh at 0
+      if (parsed.date === dayKey) counter = parsed; // same business day — keep counting up
+      // different business day — counter above already starts fresh at 0
     }
   } catch (e) {
     console.error('Failed to read daily order counter, restarting from 1', e);
@@ -619,9 +619,10 @@ export const generateDayEndReceipt = (reportData) => {
 
   data.push(ESC_ALIGN_LEFT);
   if (daySession) {
-    data.push(textToBytes(`Started: ${new Date(daySession.startedAt).toLocaleTimeString()} by ${daySession.startedBy}`));
+    data.push(textToBytes(`Business Date: ${daySession.dateKey}`));
+    data.push(textToBytes(`Started: ${new Date(daySession.startedAt).toLocaleString()} by ${daySession.startedBy}`));
     if (isClosed && daySession.endedAt) {
-      data.push(textToBytes(`Closed: ${new Date(daySession.endedAt).toLocaleTimeString()} by ${daySession.endedBy}`));
+      data.push(textToBytes(`Closed: ${new Date(daySession.endedAt).toLocaleString()} by ${daySession.endedBy}`));
     }
   }
   data.push(textToBytes(sep));

@@ -7,7 +7,7 @@ import { getCurrentDaySession, closeDay } from './dayEndUtils';
 import { auditDb } from './auditUtils';
 import { printViaBluetooth, generateDayEndReceipt } from './printUtils';
 
-export default function DayEndReport({ onBack }) {
+export default function DayEndReport({ onBack, onDayClosed }) {
   const settledOrders = useLiveQuery(() => db.orders.where('status').equals('SETTLED').toArray()) || [];
   const deletedItemsLog = useLiveQuery(() => auditDb.deletedItems.toArray()) || [];
   const deletedBillsLog = useLiveQuery(() => auditDb.deletedBills.toArray()) || [];
@@ -24,10 +24,24 @@ export default function DayEndReport({ onBack }) {
     getCurrentDaySession().then(setDaySession);
   }, []);
 
-  const todayStr = new Date().toDateString();
-  const todaysOrders = settledOrders.filter(o => o.settledDate && new Date(o.settledDate).toDateString() === todayStr);
-  const todaysDeletedItems = deletedItemsLog.filter(l => new Date(l.deletedAt).toDateString() === todayStr);
-  const todaysDeletedBills = deletedBillsLog.filter(l => new Date(l.deletedAt).toDateString() === todayStr);
+  const sessionStart = daySession?.startedAt ? new Date(daySession.startedAt).getTime() : 0;
+  const sessionEnd = daySession?.endedAt ? new Date(daySession.endedAt).getTime() : Infinity;
+
+  const todaysOrders = settledOrders.filter(o => {
+    if (!o.settledDate) return false;
+    const t = new Date(o.settledDate).getTime();
+    return t >= sessionStart && t <= sessionEnd;
+  });
+  const todaysDeletedItems = deletedItemsLog.filter(l => {
+    if (!l.deletedAt) return false;
+    const t = new Date(l.deletedAt).getTime();
+    return t >= sessionStart && t <= sessionEnd;
+  });
+  const todaysDeletedBills = deletedBillsLog.filter(l => {
+    if (!l.deletedAt) return false;
+    const t = new Date(l.deletedAt).getTime();
+    return t >= sessionStart && t <= sessionEnd;
+  });
 
   // Metrics
   let totalNetSales = 0, totalDiscounts = 0, totalServiceCharge = 0, totalItemsSold = 0;
@@ -87,7 +101,12 @@ export default function DayEndReport({ onBack }) {
         });
         setDaySession(updated);
         setIsClosing(false);
+        
+        // Auto print the Day End report using the thermal printer setup
+        await performThermalPrint(updated);
+
         Swal.fire({ icon: 'success', title: 'Day Closed Successfully! ✅', text: `Closed by ${matchedAdmin.username}`, confirmButtonColor: '#059669' });
+        if (onDayClosed) onDayClosed();
       } else {
         Swal.fire({ icon: 'error', title: 'Invalid Credentials!', text: 'Username or Password is incorrect, or you do not have Admin privileges.', confirmButtonColor: '#ef4444' });
       }
@@ -101,11 +120,9 @@ export default function DayEndReport({ onBack }) {
 
   const [isPrinting, setIsPrinting] = useState(false);
 
-  const handleThermalPrint = async () => {
-    setIsPrinting(true);
+  const performThermalPrint = async (sessionToPrint) => {
+    if (!sessionToPrint) return false;
     try {
-      // Check the printer setup directly first, so we can show exactly what's
-      // wrong instead of one generic message covering several possible causes.
       const mappingSaved = localStorage.getItem('pos_printer_mapping');
       const devicesSaved = localStorage.getItem('pos_paired_bluetooth_devices');
       const mapping = mappingSaved ? JSON.parse(mappingSaved) : {};
@@ -117,36 +134,46 @@ export default function DayEndReport({ onBack }) {
 
       if (!billDeviceId) {
         Swal.fire({ icon: 'warning', title: 'No Bill Printer Assigned (on this device)', text: 'Admin Panel → Printer Settings shows no printer saved for BILL in this app instance. If Bill printing works elsewhere, this may be a different install/browser profile with its own separate settings — re-assign it here too.' });
-        return;
+        return false;
       }
       if (!billDevice) {
         Swal.fire({ icon: 'warning', title: 'Bill Printer Not Found', text: `A printer was assigned to BILL, but it's no longer in the paired devices list. Go to Admin Panel → Printer Settings and re-pair it (tap "Load Paired BT Devices").` });
-        return;
+        return false;
       }
 
+      const expected = paymentMap.CASH;
+      const counted = sessionToPrint.cashCounted != null ? sessionToPrint.cashCounted : (cashCounted !== '' ? cashCountedNum : null);
+      const variance = sessionToPrint.cashVariance != null ? sessionToPrint.cashVariance : (cashCounted !== '' ? (cashCountedNum - expected) : null);
+
       const receipt = generateDayEndReceipt({
-        daySession,
+        daySession: sessionToPrint,
         totalNetSales, totalDiscounts, totalServiceCharge, totalItemsSold,
         totalOrders: todaysOrders.length,
         paymentMap, cashierList, topProducts,
-        cashExpected,
-        cashCounted: cashCounted !== '' ? cashCountedNum : (isAlreadyClosed ? daySession?.cashCounted : null),
-        cashVariance: cashCounted !== '' ? cashVariance : (isAlreadyClosed ? daySession?.cashVariance : null),
+        cashExpected: expected,
+        cashCounted: counted,
+        cashVariance: variance,
         deletedItemsCount: todaysDeletedItems.length,
         deletedBillsCount: todaysDeletedBills.length,
-        isClosed: isAlreadyClosed,
+        isClosed: sessionToPrint.status === 'CLOSED',
       });
       const printed = await printViaBluetooth('bill', receipt);
       if (!printed) {
         Swal.fire({ icon: 'error', title: 'Print Failed', text: `Found "${billDevice.name}" but could not print to it. Check it's powered on and in range, then try again.` });
+        return false;
       }
+      return true;
     } catch (err) {
       console.error(err);
       Swal.fire({ icon: 'error', title: 'Print Failed', text: err.message });
-    } finally {
-      setIsPrinting(false);
+      return false;
     }
+  };
 
+  const handleThermalPrint = async () => {
+    setIsPrinting(true);
+    await performThermalPrint(daySession);
+    setIsPrinting(false);
   };
 
   const handleExportCsv = () => {

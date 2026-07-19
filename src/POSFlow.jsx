@@ -5,7 +5,7 @@ import SubEntitySelector from './SubEntitySelector';
 import BillingScreen from './BillingScreen';
 import { ensureDefaultMainCategories } from './mainCategoryUtils';
 
-export default function POSFlow({ currentUser, onLogout }) {
+export default function POSFlow({ currentUser, onLogout, activeDaySession }) {
   const [mainCategory, setMainCategory] = useState(null);
   const [entityName, setEntityName] = useState(null);
 
@@ -35,6 +35,7 @@ export default function POSFlow({ currentUser, onLogout }) {
       mainCategory={mainCategory}
       entityName={entityName}
       currentUser={currentUser}
+      activeDaySession={activeDaySession}
       onBack={() => setEntityName(null)}
     />
   );

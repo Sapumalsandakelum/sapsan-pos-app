@@ -185,7 +185,7 @@ export const connectToServer = (serverUrl) => {
   attachHooks();
 
   notifyConnectionListeners('connecting');
-  socket = io(serverUrl, { transports: ['websocket'], reconnectionDelay: 2000 });
+  socket = io(serverUrl, { reconnectionDelay: 2000 });
 
   socket.on('connect', async () => {
     await runFullSync(); // catch up on anything missed while disconnected

@@ -1,7 +1,8 @@
 // src/DashboardScreen.jsx
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { getMostRecentSession } from './dayEndUtils';
 
 export default function DashboardScreen() {
   // SETTLED තත්ත්වයේ ඇති සියලුම ඕඩර්ස් ලයිව් ක්වෙරි කර ගැනීම
@@ -9,13 +10,22 @@ export default function DashboardScreen() {
     db.orders.where('status').equals('SETTLED').toArray()
   ) || [];
 
-  // 1. අද දවසේ දිනය (Today's Date String) සැසඳීමට
-  const todayStr = new Date().toDateString();
+  const [daySession, setDaySession] = useState(null);
 
-  // 2. අද දවසේ ඕඩර්ස් විතරක් ෆිල්ටර් කර ගැනීම
+  useEffect(() => {
+    getMostRecentSession().then(setDaySession);
+  }, []);
+
+  // Filter orders based on active/most recent session timestamps to support late shifts
   const todaysOrders = settledOrders.filter(order => {
     if (!order.settledDate) return false;
-    return new Date(order.settledDate).toDateString() === todayStr;
+    if (!daySession) {
+      return new Date(order.settledDate).toDateString() === new Date().toDateString();
+    }
+    const start = new Date(daySession.startedAt).getTime();
+    const end = daySession.endedAt ? new Date(daySession.endedAt).getTime() : Infinity;
+    const t = new Date(order.settledDate).getTime();
+    return t >= start && t <= end;
   });
 
   // ==========================================
@@ -62,7 +72,7 @@ export default function DashboardScreen() {
           <p className="text-xs text-gray-400 font-medium">Daily sales and business analytics</p>
         </div>
         <div className="bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-xl text-indigo-700 font-bold text-xs">
-          📅 Today: {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+          📅 Business Day: {daySession ? daySession.dateKey : new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
         </div>
       </div>
 

@@ -145,11 +145,18 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     { key: 'CUSTOM', label: 'Custom Range' },
   ];
 
+  const getLocalDateString = (d = new Date()) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   const [activeReportGroup, setActiveReportGroup] = useState('OVERVIEW');
   const [reportType, setReportType] = useState('SUMMARY');
   const [datePreset, setDatePreset] = useState('TODAY');
-  const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
-  const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
+  const [startDate, setStartDate] = useState(() => getLocalDateString());
+  const [endDate, setEndDate] = useState(() => getLocalDateString());
   const [selectedItemFilter, setSelectedItemFilter] = useState('ALL');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('ALL');
   const [selectedPaymentFilter, setSelectedPaymentFilter] = useState('ALL');
@@ -178,41 +185,62 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
   const getDateRangeFromPreset = (preset, customStart, customEnd) => {
     const now = new Date();
-    const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
-    const endOfDay = (d) => { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; };
+    
+    // Explicit local date construction helpers
+    const startOfLocalDate = (year, month, day) => new Date(year, month, day, 0, 0, 0, 0);
+    const endOfLocalDate = (year, month, day) => new Date(year, month, day, 23, 59, 59, 999);
 
     switch (preset) {
       case 'TODAY':
-        return { start: startOfDay(now), end: endOfDay(now) };
+        return { 
+          start: startOfLocalDate(now.getFullYear(), now.getMonth(), now.getDate()), 
+          end: endOfLocalDate(now.getFullYear(), now.getMonth(), now.getDate()) 
+        };
       case 'YESTERDAY': {
-        const y = new Date(now); y.setDate(y.getDate() - 1);
-        return { start: startOfDay(y), end: endOfDay(y) };
+        const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+        return { 
+          start: startOfLocalDate(y.getFullYear(), y.getMonth(), y.getDate()), 
+          end: endOfLocalDate(y.getFullYear(), y.getMonth(), y.getDate()) 
+        };
       }
       case 'THIS_WEEK': {
         const day = now.getDay();
         const diffToMonday = (day === 0 ? 6 : day - 1);
-        const monday = new Date(now); monday.setDate(now.getDate() - diffToMonday);
-        return { start: startOfDay(monday), end: endOfDay(now) };
+        const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diffToMonday);
+        return { 
+          start: startOfLocalDate(monday.getFullYear(), monday.getMonth(), monday.getDate()), 
+          end: endOfLocalDate(now.getFullYear(), now.getMonth(), now.getDate()) 
+        };
       }
       case 'THIS_MONTH': {
-        const first = new Date(now.getFullYear(), now.getMonth(), 1);
-        return { start: startOfDay(first), end: endOfDay(now) };
+        return { 
+          start: startOfLocalDate(now.getFullYear(), now.getMonth(), 1), 
+          end: endOfLocalDate(now.getFullYear(), now.getMonth(), now.getDate()) 
+        };
       }
       case 'LAST_MONTH': {
-        const firstLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        const lastLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
-        return { start: startOfDay(firstLastMonth), end: endOfDay(lastLastMonth) };
+        const lastOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+        return { 
+          start: startOfLocalDate(lastOfLastMonth.getFullYear(), lastOfLastMonth.getMonth(), 1), 
+          end: endOfLocalDate(lastOfLastMonth.getFullYear(), lastOfLastMonth.getMonth(), lastOfLastMonth.getDate()) 
+        };
       }
       case 'THIS_YEAR': {
-        const first = new Date(now.getFullYear(), 0, 1);
-        return { start: startOfDay(first), end: endOfDay(now) };
+        return { 
+          start: startOfLocalDate(now.getFullYear(), 0, 1), 
+          end: endOfLocalDate(now.getFullYear(), now.getMonth(), now.getDate()) 
+        };
       }
       case 'CUSTOM':
-      default:
+      default: {
+        if (!customStart || !customEnd) return { start: null, end: null };
+        const [sYear, sMonth, sDay] = customStart.split('-').map(Number);
+        const [eYear, eMonth, eDay] = customEnd.split('-').map(Number);
         return {
-          start: customStart ? new Date(customStart + 'T00:00:00') : null,
-          end: customEnd ? new Date(customEnd + 'T23:59:59') : null,
+          start: new Date(sYear, sMonth - 1, sDay, 0, 0, 0, 0),
+          end: new Date(eYear, eMonth - 1, eDay, 23, 59, 59, 999),
         };
+      }
     }
   };
 
@@ -227,6 +255,8 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     return settledOrders.filter(order => {
       if (!order.settledDate) return false;
       const orderDate = new Date(order.settledDate);
+      if (isNaN(orderDate.getTime())) return false;
+      if (!order.items || !Array.isArray(order.items)) return false;
 
       if (rangeStart && rangeStart > orderDate) return false;
       if (rangeEnd && rangeEnd < orderDate) return false;
@@ -272,9 +302,28 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     const key = sortConfig.key || defaultKey;
     const dir = sortConfig.key ? sortConfig.direction : defaultDir;
     return [...list].sort((a, b) => {
-      const av = a[key], bv = b[key];
-      if (typeof av === 'string') return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
-      return dir === 'asc' ? (av - bv) : (bv - av);
+      let av = a[key];
+      let bv = b[key];
+      
+      if (av === bv) return 0;
+      if (av === undefined || av === null) return 1;
+      if (bv === undefined || bv === null) return -1;
+
+      // Safe Date parsing
+      if (av instanceof Date) av = av.getTime();
+      if (bv instanceof Date) bv = bv.getTime();
+
+      // Check if both are numbers (or dates converted to timestamps)
+      const isNumA = typeof av === 'number' && !isNaN(av);
+      const isNumB = typeof bv === 'number' && !isNaN(bv);
+      
+      if (isNumA && isNumB) {
+        return dir === 'asc' ? av - bv : bv - av;
+      }
+      
+      const avStr = String(av);
+      const bvStr = String(bv);
+      return dir === 'asc' ? avStr.localeCompare(bvStr) : bvStr.localeCompare(avStr);
     });
   };
   const handleSort = (key) => {
@@ -401,7 +450,10 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   // cashier, table, and item filters as everything else above
   // ==========================================
   const filteredDeletedItems = deletedItemsLog.filter(log => {
+    if (!log.deletedAt) return false;
     const logDate = new Date(log.deletedAt);
+    if (isNaN(logDate.getTime())) return false;
+    
     if (rangeStart && rangeStart > logDate) return false;
     if (rangeEnd && rangeEnd < logDate) return false;
     if (selectedTableFilter !== 'ALL' && (log.tableNumber || 'Walk-in') !== selectedTableFilter) return false;
@@ -410,7 +462,10 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   });
 
   const filteredDeletedBills = deletedBillsLog.filter(log => {
+    if (!log.deletedAt) return false;
     const logDate = new Date(log.deletedAt);
+    if (isNaN(logDate.getTime())) return false;
+    
     if (rangeStart && rangeStart > logDate) return false;
     if (rangeEnd && rangeEnd < logDate) return false;
     if (selectedTableFilter !== 'ALL' && (log.tableNumber || 'Walk-in') !== selectedTableFilter) return false;
@@ -981,19 +1036,33 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     const isShortRange = datePreset === 'TODAY' || datePreset === 'YESTERDAY' || 
       (rangeStart && rangeEnd && (rangeEnd - rangeStart) <= 2 * 24 * 60 * 60 * 1000);
 
+    const formatLocalDate = (date) => {
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return `${months[date.getMonth()]} ${date.getDate()}`;
+    };
+
+    const formatLocalTime = (date) => {
+      let hours = date.getHours();
+      const minutes = String(date.getMinutes()).padStart(2, '0');
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12;
+      hours = hours ? hours : 12;
+      return `${hours}:${minutes} ${ampm}`;
+    };
+
     const groups = {};
     filteredOrders.forEach(o => {
       if (!o.settledDate) return;
       const d = new Date(o.settledDate);
-      const label = isShortRange 
-        ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })
-        : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      if (isNaN(d.getTime())) return;
+      
+      const label = isShortRange ? formatLocalTime(d) : formatLocalDate(d);
       
       const sortKey = d.getTime();
       if (!groups[label]) {
         groups[label] = { label, sales: 0, sortKey, count: 0 };
       }
-      groups[label].sales += o.netTotal || 0;
+      groups[label].sales += parseFloat(o.netTotal) || 0;
       groups[label].count += 1;
     });
 

@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import POSFlow from './POSFlow';
 import AdminPanel from './AdminPanel';
 import DashboardScreen from './DashboardScreen';
+import ErrorBoundary from './ErrorBoundary';
 import LoginPage from './LoginPage';
 import DayEndReport from './DayEndReport';
 import { getSession, clearSession } from './authUtils';
@@ -278,12 +279,14 @@ function AppContent() {
         )}
 
         {currentScreen === 'ADMIN' && isAdmin && (
-          <AdminPanel
-            onBackToBilling={() => setCurrentScreen('BILLING')}
-            onNavigate={(screen) => setCurrentScreen(screen)}
-            currentUser={session}
-            onLogout={handleLogout}
-          />
+          <ErrorBoundary>
+            <AdminPanel
+              onBackToBilling={() => setCurrentScreen('BILLING')}
+              onNavigate={(screen) => setCurrentScreen(screen)}
+              currentUser={session}
+              onLogout={handleLogout}
+            />
+          </ErrorBoundary>
         )}
       </main>
     </div>

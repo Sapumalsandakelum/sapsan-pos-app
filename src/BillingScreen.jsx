@@ -356,24 +356,18 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
       if (kotItems.length > 0) {
         const kotReceipt = generateKitchenReceipt(isTakeawayLike, entityName, 'KOT (KITCHEN)', kotItems, orderNumber);
         const kotHtml = generateKitchenReceiptHtml(isTakeawayLike, entityName, 'KOT (KITCHEN)', kotItems, orderNumber);
-        await printViaBluetooth('kot', kotReceipt, kotHtml);
+        printViaBluetooth('kot', kotReceipt, kotHtml);
       }
       if (botItems.length > 0) {
         const botReceipt = generateKitchenReceipt(isTakeawayLike, entityName, 'BOT (BAR)', botItems, orderNumber);
         const botHtml = generateKitchenReceiptHtml(isTakeawayLike, entityName, 'BOT (BAR)', botItems, orderNumber);
-        await printViaBluetooth('bot', botReceipt, botHtml);
+        printViaBluetooth('bot', botReceipt, botHtml);
       }
-
-      let printerReceipts = '';
-      if (kotItems.length > 0) printerReceipts += `<li>🔥 <b>KOT Sent to Printer</b> (${kotItems.length} items)</li>`;
-      if (botItems.length > 0) printerReceipts += `<li>🍹 <b>BOT Sent to Printer</b> (${botItems.length} items)</li>`;
 
       Swal.fire({
         icon: 'success',
-        title: `${entityName} Data Saved!`,
-        html: `<div class="text-left text-xs bg-gray-50 p-3 rounded-xl mt-2 border"><ul class="list-disc pl-4 space-y-1">${printerReceipts || '<li>No new items to print.</li>'}</ul></div>`,
-        confirmButtonColor: '#059669',
-        confirmButtonText: 'Done'
+        title: `${entityName} Saved`,
+        toast: true, position: 'top-end', showConfirmButton: false, timer: 1200
       });
     } catch (err) {
       console.error(err);
@@ -393,18 +387,16 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
       await db.orders.update(existingOrder.id, { isPreBillPrinted: true });
     }
 
-    Swal.fire({ title: 'Printing Pre-Bill...', didOpen: () => Swal.showLoading(), allowOutsideClick: false, showConfirmButton: false });
     const preBillReceipt = await generateBillReceipt(isTakeawayLike, entityName, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart, existingOrder ? existingOrder.dailyOrderNumber : null);
     const preBillHtml = generateBillReceiptHtml(isTakeawayLike, entityName, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart, existingOrder ? existingOrder.dailyOrderNumber : null);
-    const printed = await printViaBluetooth('bill', preBillReceipt, preBillHtml);
-    Swal.close();
+    printViaBluetooth('bill', preBillReceipt, preBillHtml);
 
-    if (printed) {
-      Swal.fire({ icon: 'info', title: '📄 Pre-Bill Printed', html: `<b>${entityName}</b> Gross Total: <span class="text-indigo-600 font-bold">Rs.${netTotal.toFixed(2)}</span>`, showConfirmButton: false, timer: 2500, timerProgressBar: true });
-    } else {
-      Swal.fire({ icon: 'warning', title: 'No Bill Printer Assigned!', text: 'Go to Admin Panel → Printer Settings → Assign Printer Roles and set a printer for BILL.', confirmButtonColor: '#4f46e5' });
-    }
     setIsPreBillPrinted(true);
+    Swal.fire({
+      icon: 'success',
+      title: 'Pre-Bill Sent to Printer',
+      toast: true, position: 'top-end', showConfirmButton: false, timer: 1200
+    });
   };
 
   const handleFinalSettle = async () => {
@@ -413,24 +405,16 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
     try {
       await db.orders.update(existingOrder.id, { discountAmount, netTotal: finalTotal, paymentMethod, status: 'SETTLED', settledDate: new Date() });
 
-      Swal.fire({ title: 'Printing Final Invoice...', didOpen: () => Swal.showLoading(), allowOutsideClick: false, showConfirmButton: false });
       const finalReceipt = await generateBillReceipt(isTakeawayLike, entityName, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart, existingOrder.dailyOrderNumber);
       const finalHtml = generateBillReceiptHtml(isTakeawayLike, entityName, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart, existingOrder.dailyOrderNumber);
-      const printed = await printViaBluetooth('bill', finalReceipt, finalHtml);
-      Swal.close();
+      printViaBluetooth('bill', finalReceipt, finalHtml);
 
-      Swal.fire({
-        icon: 'success',
-        title: 'Settlement Successful! ✅',
-        text: printed ? `🧾 Final Invoice Printed (${paymentMethod} Mode)` : `Settled (${paymentMethod} Mode) — no bill printer assigned, so nothing was printed.`,
-        confirmButtonColor: '#111827'
-      });
+      // Instantly finish settlement & return without blocking popups!
       setIsSettleModalOpen(false);
       setCart([]); setIsSavedForTable(false); setIsPreBillPrinted(false);
-      onBack(); // settlement done — head back to the table/order grid
+      onBack();
     } catch (err) {
       console.error(err);
-      Swal.close();
       Swal.fire({ icon: 'error', title: 'Settlement Failed', text: err.message });
     }
   };

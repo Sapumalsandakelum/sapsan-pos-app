@@ -321,7 +321,7 @@ const printViaSerialPort = async (deviceInfo, targetRole, receiptDataArray) => {
 // ==========================================
 // 🖨️ WINDOWS DRIVER PRINT MODE ENGINE (window.print())
 // ==========================================
-export const printViaWindowsDriver = (htmlContent) => {
+export const printViaWindowsDriver = async (htmlContent) => {
   try {
     let container = document.getElementById('pos-printable-receipt');
     if (!container) {
@@ -330,6 +330,21 @@ export const printViaWindowsDriver = (htmlContent) => {
       document.body.appendChild(container);
     }
     container.innerHTML = htmlContent;
+
+    // ⚡ Silent Print in Electron App (No print dialog / no asking user to print!)
+    if (window.require) {
+      try {
+        const electron = window.require('electron');
+        if (electron && electron.ipcRenderer) {
+          const res = await electron.ipcRenderer.invoke('print-silent');
+          if (res && res.success) return true;
+        }
+      } catch (e) {
+        console.warn('Electron silent print invocation failed, falling back to browser print:', e);
+      }
+    }
+
+    // Fallback for browser outside Electron
     window.print();
     return true;
   } catch (err) {
@@ -744,54 +759,70 @@ export const generateDayEndReceipt = (reportData) => {
 };
 
 // ==========================================
-// 🌐 HTML RECEIPT GENERATORS FOR WINDOWS DRIVER MODE
+// 🌐 HTML RECEIPT GENERATORS MATCHING BILL DESIGN TAB PREVIEW
 // ==========================================
 export const generateBillReceiptHtml = (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, orderNumber) => {
   const settings = getBillDesignSettings();
-  const widthStyle = settings.paperWidth === '58mm' ? 'max-width: 58mm; padding: 4px;' : 'max-width: 80mm; padding: 8px;';
+  const widthPx = settings.paperWidth === '58mm' ? '230px' : '300px';
+
+  const PREVIEW_SIZE_PX = { NORMAL: '11px', LARGE: '14px', XLARGE: '17px', HUGE: '22px' };
+  const previewSizePx = (tier) => PREVIEW_SIZE_PX[tier] || PREVIEW_SIZE_PX.NORMAL;
+  const PREVIEW_SIZE_SEQUENCE = ['NORMAL', 'LARGE', 'XLARGE', 'HUGE'];
+  const bumpPreviewSize = (tier) => {
+    const idx = Math.min(PREVIEW_SIZE_SEQUENCE.indexOf(tier) + 1, PREVIEW_SIZE_SEQUENCE.length - 1);
+    return PREVIEW_SIZE_SEQUENCE[idx] || 'NORMAL';
+  };
+
+  const storeNameFont = previewSizePx(settings.storeNameFontSize);
+  const bodyFont = previewSizePx(settings.billFontSize);
+  const netTotalFont = previewSizePx(bumpPreviewSize(settings.billFontSize));
   const now = new Date();
 
-  let html = `<div style="font-family: 'Courier New', Courier, monospace; font-size: 13px; color: #000; margin: 0 auto; line-height: 1.3; ${widthStyle}">`;
+  let html = `<div style="width: ${widthPx}; font-family: monospace; font-size: ${bodyFont}; color: #000; margin: 0 auto; background: #fff; padding: 12px; box-sizing: border-box; line-height: 1.3;">`;
 
   if (settings.showLogo && settings.logoBase64) {
-    html += `<div style="text-align: center; margin-bottom: 6px;"><img src="${settings.logoBase64}" style="max-height: 50px; max-width: 80%; margin: 0 auto;" /></div>`;
+    html += `<div style="margin: 0 auto 8px auto; display: flex; align-items: center; justify-content: center; width: 100%; height: 48px;"><img src="${settings.logoBase64}" alt="logo" style="max-width: 100%; max-height: 100%; object-fit: contain;" /></div>`;
   }
 
-  html += `<div style="text-align: center; font-weight: 900; font-size: 16px; text-transform: uppercase;">${settings.storeName || 'SAPSAN RESTAURANT'}</div>`;
+  html += `<div style="text-align: center; font-weight: 900; line-height: 1.2; font-size: ${storeNameFont};">${settings.storeName || 'MY RESTAURANT'}</div>`;
+
   if (settings.showAddress && settings.storeAddress) {
-    html += `<div style="text-align: center; font-size: 11px;">${settings.storeAddress}</div>`;
+    html += `<div style="text-align: center; font-size: 10px; color: #4b5563;">${settings.storeAddress}</div>`;
   }
   if (settings.showPhone && settings.storePhone) {
-    html += `<div style="text-align: center; font-size: 11px;">Tel: ${settings.storePhone}</div>`;
+    html += `<div style="text-align: center; font-size: 10px; color: #4b5563;">Tel: ${settings.storePhone}</div>`;
   }
 
-  html += `<div style="text-align: center; font-weight: bold; margin: 4px 0;">--- ${billTitle} ---</div>`;
+  html += `<div style="text-align: center; font-size: 10px; font-weight: bold; margin: 4px 0;">--- ${billTitle} ---</div>`;
 
   if (settings.showOrderNumber && orderNumber !== undefined && orderNumber !== null) {
-    html += `<div style="text-align: center; font-weight: 900; font-size: 22px; border: 1px dashed #000; padding: 2px; margin: 4px 0;">Order #${orderNumber}</div>`;
+    html += `<div style="text-align: center; font-weight: 900; font-size: ${previewSizePx('HUGE')}; margin: 4px 0;">Order #${orderNumber}</div>`;
   }
 
-  html += `<div style="font-size: 11px;">${isTakeaway ? 'Type' : 'Table'}: <b>${tableName}</b></div>`;
-  html += `<div style="font-size: 11px; margin-bottom: 4px;">Date: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}</div>`;
+  html += `<div style="font-size: 10px; border-top: 1px dashed #9ca3af; border-bottom: 1px dashed #9ca3af; padding: 4px 0; margin: 4px 0; display: flex; justify-content: space-between;"><span>${isTakeaway ? 'Type' : 'Table'}: ${tableName}</span></div>`;
+  html += `<div style="font-size: 10px; text-align: center; margin-bottom: 4px;">${now.toLocaleDateString()} ${now.toLocaleTimeString()}</div>`;
 
-  html += `<div style="border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 4px 0; margin: 4px 0;">`;
+  html += `<div style="font-size: ${bodyFont}; padding: 4px 0;">`;
   itemsList.forEach(item => {
-    const total = (item.sellingPrice * item.quantity).toFixed(2);
-    html += `<div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 12px;"><span>${item.name}</span></div>`;
-    html += `<div style="display: flex; justify-content: space-between; font-size: 11px; padding-left: 8px; margin-bottom: 2px;"><span>${item.quantity} x Rs.${item.sellingPrice}</span><span>Rs.${total}</span></div>`;
+    const total = (item.sellingPrice * item.quantity).toFixed(0);
+    html += `<div style="display: flex; justify-content: space-between; font-weight: bold;"><span>${item.name}</span><span></span></div>`;
+    html += `<div style="display: flex; justify-content: space-between; color: #6b7280; font-size: 10px; margin-bottom: 2px;"><span>${item.quantity} x ${item.sellingPrice}</span><span>= Rs.${total}</span></div>`;
   });
   html += `</div>`;
 
-  html += `<div style="display: flex; justify-content: space-between; font-size: 11px;"><span>Sub Total:</span><span>Rs.${sub.toFixed(2)}</span></div>`;
-  html += `<div style="display: flex; justify-content: space-between; font-size: 11px;"><span>Service Charge:</span><span>Rs.${sc.toFixed(2)}</span></div>`;
+  html += `<div style="border-top: 1px dashed #9ca3af; margin: 4px 0;"></div>`;
+
+  html += `<div style="font-size: 10px;">`;
+  html += `<div style="display: flex; justify-content: space-between;"><span>Sub Total:</span><span>Rs.${sub.toFixed(2)}</span></div>`;
+  html += `<div style="display: flex; justify-content: space-between;"><span>Service Charge:</span><span>Rs.${sc.toFixed(2)}</span></div>`;
   if (disc > 0) {
-    html += `<div style="display: flex; justify-content: space-between; font-size: 11px;"><span>Discount:</span><span>-Rs.${disc.toFixed(2)}</span></div>`;
+    html += `<div style="display: flex; justify-content: space-between;"><span>Discount:</span><span>-Rs.${disc.toFixed(2)}</span></div>`;
   }
+  html += `<div style="display: flex; justify-content: space-between; font-weight: 900; border-top: 1px dashed #9ca3af; padding-top: 4px; margin-top: 4px; font-size: ${netTotalFont};"><span>NET TOTAL:</span><span>Rs.${net.toFixed(2)}</span></div>`;
+  html += `</div>`;
 
-  html += `<div style="display: flex; justify-content: space-between; font-weight: 900; font-size: 16px; border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 4px 0; margin-top: 4px;"><span>NET TOTAL:</span><span>Rs.${net.toFixed(2)}</span></div>`;
-
-  html += `<div style="text-align: center; font-size: 11px; margin-top: 8px;">${settings.footerMessage || 'Thank You! Come Again.'}</div>`;
-  html += `<div style="text-align: center; font-size: 9px; color: #555; margin-top: 4px;">${DEVELOPER_CREDIT_LINE_1} - ${DEVELOPER_CREDIT_LINE_2}</div>`;
+  html += `<div style="text-align: center; font-size: 10px; margin-top: 8px;">${settings.footerMessage || 'Thank You! Come Again.'}</div>`;
+  html += `<div style="text-align: center; font-size: 8px; color: #9ca3af; margin-top: 8px; line-height: 1.2;"><div>${DEVELOPER_CREDIT_LINE_1}</div><div>${DEVELOPER_CREDIT_LINE_2}</div></div>`;
 
   html += `</div>`;
   return html;
@@ -799,30 +830,40 @@ export const generateBillReceiptHtml = (isTakeaway, tableName, billTitle, sub, s
 
 export const generateKitchenReceiptHtml = (isTakeaway, tableName, typeLabel, itemsList, orderNumber) => {
   const settings = getBillDesignSettings();
-  const widthStyle = settings.paperWidth === '58mm' ? 'max-width: 58mm; padding: 4px;' : 'max-width: 80mm; padding: 8px;';
+  const widthPx = settings.paperWidth === '58mm' ? '230px' : '300px';
+
+  const PREVIEW_SIZE_PX = { NORMAL: '11px', LARGE: '14px', XLARGE: '17px', HUGE: '22px' };
+  const previewSizePx = (tier) => PREVIEW_SIZE_PX[tier] || PREVIEW_SIZE_PX.NORMAL;
+  const kotFont = previewSizePx(settings.kotBotFontSize);
   const now = new Date();
 
-  let html = `<div style="font-family: 'Courier New', Courier, monospace; font-size: 13px; color: #000; margin: 0 auto; line-height: 1.3; ${widthStyle}">`;
+  let html = `<div style="width: ${widthPx}; font-family: monospace; font-size: ${kotFont}; color: #000; margin: 0 auto; background: #fff; padding: 12px; box-sizing: border-box; line-height: 1.3;">`;
 
   if (settings.kotBotShowOrderNumber && orderNumber !== undefined && orderNumber !== null) {
-    html += `<div style="text-align: center; font-weight: 900; font-size: 24px; border: 2px solid #000; padding: 2px; margin-bottom: 4px;">Order #${orderNumber}</div>`;
+    html += `<div style="text-align: center; font-weight: 900; font-size: ${previewSizePx('HUGE')};">Order #${orderNumber}</div>`;
   }
 
-  html += `<div style="text-align: center; font-weight: 900; font-size: 16px; text-transform: uppercase;">*** ${typeLabel} ***</div>`;
+  html += `<div style="text-align: center; font-weight: 900; font-size: ${kotFont}; text-transform: uppercase;">*** ${typeLabel} ***</div>`;
 
   if (settings.kotBotShowTable) {
-    html += `<div style="font-size: 12px; font-weight: bold;">${isTakeaway ? 'Type' : 'Table'}: ${tableName}</div>`;
+    html += `<div style="font-size: 10px; text-align: center; font-weight: bold;">${isTakeaway ? 'Type' : 'Table'}: ${tableName}</div>`;
   }
 
   if (settings.kotBotShowDate || settings.kotBotShowTime) {
-    html += `<div style="font-size: 11px; margin-bottom: 4px;">Date: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}</div>`;
+    html += `<div style="font-size: 10px; text-align: center; margin-bottom: 4px;">`;
+    if (settings.kotBotShowDate) html += `Date: ${now.toLocaleDateString()}`;
+    if (settings.kotBotShowDate && settings.kotBotShowTime) html += `  `;
+    if (settings.kotBotShowTime) html += `Time: ${now.toLocaleTimeString()}`;
+    html += `</div>`;
   }
 
-  html += `<div style="border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 6px 0; margin: 6px 0;">`;
+  html += `<div style="border-top: 1px dashed #9ca3af; margin: 4px 0;"></div>`;
+  html += `<div style="text-align: left; font-size: ${kotFont}; font-weight: bold; padding: 4px 0;">`;
   itemsList.forEach(item => {
-    html += `<div style="font-size: 15px; font-weight: 900; margin-bottom: 4px;">${item.quantity} x ${item.name}</div>`;
+    html += `<div>${item.quantity} x ${item.name}</div>`;
   });
   html += `</div>`;
+  html += `<div style="border-top: 1px dashed #9ca3af; margin: 4px 0;"></div>`;
 
   html += `</div>`;
   return html;
@@ -835,15 +876,15 @@ export const generateDayEndReceiptHtml = (reportData) => {
   } = reportData;
 
   const settings = getBillDesignSettings();
-  const widthStyle = settings.paperWidth === '58mm' ? 'max-width: 58mm; padding: 4px;' : 'max-width: 80mm; padding: 8px;';
+  const widthPx = settings.paperWidth === '58mm' ? '230px' : '300px';
   const now = new Date();
 
-  let html = `<div style="font-family: 'Courier New', Courier, monospace; font-size: 12px; color: #000; margin: 0 auto; line-height: 1.3; ${widthStyle}">`;
+  let html = `<div style="width: ${widthPx}; font-family: monospace; font-size: 11px; color: #000; margin: 0 auto; background: #fff; padding: 12px; box-sizing: border-box; line-height: 1.3;">`;
   html += `<div style="text-align: center; font-weight: bold; font-size: 15px;">${settings.storeName || 'MY RESTAURANT'}</div>`;
   html += `<div style="text-align: center; font-weight: 900; font-size: 14px; margin: 2px 0;">*** DAY END REPORT ***</div>`;
   html += `<div style="text-align: center; font-size: 10px; margin-bottom: 6px;">${now.toLocaleDateString()} ${now.toLocaleTimeString()}</div>`;
 
-  html += `<div style="border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 4px 0; font-size: 11px;">`;
+  html += `<div style="border-top: 1px dashed #9ca3af; border-bottom: 1px dashed #9ca3af; padding: 4px 0; font-size: 10px;">`;
   if (daySession) {
     html += `<div>Business Date: <b>${daySession.dateKey}</b></div>`;
     html += `<div>Started: ${new Date(daySession.startedAt).toLocaleString()}</div>`;
@@ -853,22 +894,22 @@ export const generateDayEndReceiptHtml = (reportData) => {
   }
   html += `</div>`;
 
-  html += `<div style="padding: 4px 0; font-size: 11px;">`;
+  html += `<div style="padding: 4px 0; font-size: 10px;">`;
   html += `<div style="font-weight: bold;">Total Orders: ${totalOrders}</div>`;
   html += `<div style="font-weight: bold;">Items Sold: ${totalItemsSold}</div>`;
   html += `<div>Service Charge: Rs.${totalServiceCharge.toFixed(2)}</div>`;
   html += `<div>Discounts: Rs.${totalDiscounts.toFixed(2)}</div>`;
   html += `</div>`;
 
-  html += `<div style="border-top: 1px dashed #000; padding: 4px 0; font-size: 11px;">`;
+  html += `<div style="border-top: 1px dashed #9ca3af; padding: 4px 0; font-size: 10px;">`;
   html += `<div style="font-weight: bold;">PAYMENT METHODS</div>`;
   html += `<div>Cash: Rs.${paymentMap.CASH.toFixed(2)}</div>`;
   html += `<div>Card: Rs.${paymentMap.CARD.toFixed(2)}</div>`;
   html += `<div>Transfer: Rs.${paymentMap.TRANSFER.toFixed(2)}</div>`;
   html += `</div>`;
 
-  html += `<div style="text-align: center; font-weight: 900; font-size: 16px; border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 4px 0; margin-top: 6px;">NET SALES: Rs.${totalNetSales.toFixed(2)}</div>`;
-  html += `<div style="text-align: center; font-size: 9px; color: #555; margin-top: 6px;">${DEVELOPER_CREDIT_LINE_1} - ${DEVELOPER_CREDIT_LINE_2}</div>`;
+  html += `<div style="text-align: center; font-weight: 900; font-size: 15px; border-top: 1px dashed #9ca3af; border-bottom: 1px dashed #9ca3af; padding: 4px 0; margin-top: 6px;">NET SALES: Rs.${totalNetSales.toFixed(2)}</div>`;
+  html += `<div style="text-align: center; font-size: 8px; color: #9ca3af; margin-top: 8px; line-height: 1.2;"><div>${DEVELOPER_CREDIT_LINE_1}</div><div>${DEVELOPER_CREDIT_LINE_2}</div></div>`;
   html += `</div>`;
 
   return html;

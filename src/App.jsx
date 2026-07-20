@@ -52,6 +52,12 @@ function AppContent() {
     try {
       const active = await getActiveSession();
       setActiveDaySession(active);
+      if (active) {
+        const todayStr = new Date().toISOString().split('T')[0];
+        if (active.dateKey !== todayStr) {
+          setShowDayStatusModal(true);
+        }
+      }
     } catch (err) {
       console.error('Failed to check active session', err);
     } finally {
@@ -251,30 +257,48 @@ function AppContent() {
       {showDayStatusModal && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
           <div className="bg-white p-6 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl text-center text-xs relative overflow-hidden border">
-            <div className={`absolute top-0 left-0 right-0 h-2 ${activeDaySession ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+            <div className={`absolute top-0 left-0 right-0 h-2 ${
+              activeDaySession 
+                ? (activeDaySession.dateKey !== new Date().toISOString().split('T')[0] ? 'bg-amber-500' : 'bg-emerald-500') 
+                : 'bg-red-500'
+            }`}></div>
             
-            <div className={`inline-flex items-center justify-center w-16 h-16 rounded-full text-3xl mx-auto ${activeDaySession ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' : 'bg-red-50 text-red-600 border border-red-200'}`}>
-              {activeDaySession ? '🗓️' : '🔒'}
+            <div className={`inline-flex items-center justify-center w-16 h-16 rounded-full text-3xl mx-auto ${
+              activeDaySession 
+                ? (activeDaySession.dateKey !== new Date().toISOString().split('T')[0] ? 'bg-amber-50 text-amber-600 border border-amber-200' : 'bg-emerald-50 text-emerald-600 border border-emerald-200')
+                : 'bg-red-50 text-red-600 border border-red-200'
+            }`}>
+              {activeDaySession ? (activeDaySession.dateKey !== new Date().toISOString().split('T')[0] ? '⚠️' : '🗓️') : '🔒'}
             </div>
 
             <div className="space-y-1">
               <h3 className="text-base font-black text-gray-800">
-                {activeDaySession ? 'Business Day Currently Active' : 'Business Day Closed'}
+                {activeDaySession 
+                  ? (activeDaySession.dateKey !== new Date().toISOString().split('T')[0]
+                      ? '⚠️ Previous Day Still Active'
+                      : 'Business Day Currently Active') 
+                  : 'Business Day Closed'}
               </h3>
               <p className="text-[11px] text-gray-500">
-                {activeDaySession ? 'Details of the business day currently started:' : 'No business day is currently open.'}
+                {activeDaySession 
+                  ? (activeDaySession.dateKey !== new Date().toISOString().split('T')[0]
+                      ? `System date is ${new Date().toISOString().split('T')[0]}, but the session started on ${activeDaySession.dateKey} is still open.`
+                      : 'Details of the business day currently started:') 
+                  : 'No business day is currently open.'}
               </p>
             </div>
 
             {activeDaySession ? (
               <div className="bg-gray-50 border rounded-2xl p-3 text-left space-y-1.5 font-medium text-[11px] text-gray-700">
                 <div className="flex justify-between border-b pb-1">
-                  <span className="text-gray-400">Current Started Day:</span>
-                  <span className="font-black text-emerald-700">{activeDaySession.dateKey}</span>
+                  <span className="text-gray-400">Started Day:</span>
+                  <span className={`font-black ${activeDaySession.dateKey !== new Date().toISOString().split('T')[0] ? 'text-amber-600 font-black' : 'text-emerald-700'}`}>
+                    {activeDaySession.dateKey} {activeDaySession.dateKey !== new Date().toISOString().split('T')[0] && '(Yesterday / Previous)'}
+                  </span>
                 </div>
                 <div className="flex justify-between border-b pb-1">
                   <span className="text-gray-400">Started At:</span>
-                  <span className="font-bold">{new Date(activeDaySession.startedAt).toLocaleTimeString()}</span>
+                  <span className="font-bold">{new Date(activeDaySession.startedAt).toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-400">Started By:</span>

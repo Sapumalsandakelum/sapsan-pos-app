@@ -16,6 +16,8 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
   const categories = useLiveQuery(() => db.categories.toArray()) || [];
   const items = useLiveQuery(() => db.items.toArray()) || [];
   const activeOrders = useLiveQuery(() => db.orders.where('status').equals('PENDING').toArray()) || [];
+  const allAdvanceBookings = useLiveQuery(() => db.advanceBookings.toArray()) || [];
+  const activeAdvanceBookings = allAdvanceBookings.filter(b => b.status === 'ACTIVE');
 
   const existingOrder = activeOrders.find(o => o.tableNumber === entityName && o.mainCategoryName === mainCategory.name);
 
@@ -35,32 +37,28 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
   const [pendingAction, setPendingAction] = useState(null);
   const [pendingDeleteIndex, setPendingDeleteIndex] = useState(null);
 
-  // Settlement Modals
+  // Settlement Modals & Advance Selection
   const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
+  const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
   const [discountType, setDiscountType] = useState('PERCENT');
   const [discountValue, setDiscountValue] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState('CASH');
+  const [selectedAdvanceBookingId, setSelectedAdvanceBookingId] = useState('');
 
-  // Load this table/order's existing cart — re-runs when navigating to a
-  // different table/order, AND when this order's data finishes loading from
-  // the database (Dexie's live query resolves asynchronously, so on first
-  // arrival `existingOrder` may briefly be undefined even if a saved order
-  // actually exists — this catches it once the real data comes in).
-  // Deliberately keyed on the order's *id* rather than the whole object: the
-  // id only changes when we're truly looking at a different order, whereas
-  // the object reference changes on every unrelated database write too —
-  // depending on the object would reset/clobber any unsaved local edits
-  // every time some other table's order changed anywhere in the system.
   const existingOrderId = existingOrder?.id;
   useEffect(() => {
     if (existingOrder) {
       setCart(existingOrder.items.map(i => ({ ...i, isSaved: true })));
       setIsSavedForTable(true);
       setIsPreBillPrinted(existingOrder.isPreBillPrinted || false);
+      if (existingOrder.advanceBookingId) {
+        setSelectedAdvanceBookingId(existingOrder.advanceBookingId.toString());
+      }
     } else {
       setCart([]);
       setIsSavedForTable(false);
       setIsPreBillPrinted(false);
+      setSelectedAdvanceBookingId('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityName, mainCategory.id, existingOrderId]);
@@ -329,19 +327,18 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
 
       if (existingOrder) {
         currentPreBillState = false;
-        // Re-saving an existing order — reuse its already-assigned daily order number,
-        // do NOT generate a new one (that would break the sequence).
         orderNumber = existingOrder.dailyOrderNumber;
-        await db.orders.update(existingOrder.id, { subTotal, totalServiceCharge, netTotal, isPreBillPrinted: false, items: finalItemsForDb });
+        await db.orders.update(existingOrder.id, { subTotal, totalServiceCharge, netTotal, advancePayment: advanceDeduction, advanceBookingId: selectedAdvanceBooking ? selectedAdvanceBooking.id : (existingOrder?.advanceBookingId || null), isPreBillPrinted: false, items: finalItemsForDb });
         savedOrderId = existingOrder.id;
       } else {
-        // Brand new order — assign the next number in today's sequence (auto-resets daily)
         orderNumber = getNextDailyOrderNumber(activeDaySession?.dateKey);
         savedOrderId = await db.orders.add({
           orderDate: new Date(),
           tableNumber: entityName,
           mainCategoryName: mainCategory.name,
           subTotal, totalServiceCharge, discountAmount: 0, netTotal,
+          advancePayment: advanceDeduction,
+          advanceBookingId: selectedAdvanceBooking ? selectedAdvanceBooking.id : null,
           paymentMethod: 'PENDING', status: 'PENDING', isPreBillPrinted: false,
           items: finalItemsForDb, dailyOrderNumber: orderNumber,
           cashierName: currentUser?.username || 'Admin Cashier',
@@ -387,8 +384,8 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
       await db.orders.update(existingOrder.id, { isPreBillPrinted: true });
     }
 
-    const preBillReceipt = await generateBillReceipt(isTakeawayLike, entityName, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart, existingOrder ? existingOrder.dailyOrderNumber : null);
-    const preBillHtml = generateBillReceiptHtml(isTakeawayLike, entityName, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart, existingOrder ? existingOrder.dailyOrderNumber : null);
+    const preBillReceipt = await generateBillReceipt(isTakeawayLike, entityName, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart, existingOrder ? existingOrder.dailyOrderNumber : null, advanceDeduction);
+    const preBillHtml = generateBillReceiptHtml(isTakeawayLike, entityName, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart, existingOrder ? existingOrder.dailyOrderNumber : null, advanceDeduction);
     printViaBluetooth('bill', preBillReceipt, preBillHtml);
 
     setIsPreBillPrinted(true);
@@ -403,14 +400,30 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
     if (!existingOrder) return;
 
     try {
-      await db.orders.update(existingOrder.id, { discountAmount, netTotal: finalTotal, paymentMethod, status: 'SETTLED', settledDate: new Date() });
+      if (selectedAdvanceBooking) {
+        await db.advanceBookings.update(selectedAdvanceBooking.id, {
+          status: 'REDEEMED',
+          redeemedOrderId: existingOrder.id
+        });
+      }
 
-      const finalReceipt = await generateBillReceipt(isTakeawayLike, entityName, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart, existingOrder.dailyOrderNumber);
-      const finalHtml = generateBillReceiptHtml(isTakeawayLike, entityName, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart, existingOrder.dailyOrderNumber);
+      await db.orders.update(existingOrder.id, {
+        discountAmount,
+        advancePayment: advanceDeduction,
+        advanceBookingId: selectedAdvanceBooking ? selectedAdvanceBooking.id : (existingOrder?.advanceBookingId || null),
+        netTotal: finalTotal,
+        paymentMethod,
+        status: 'SETTLED',
+        settledDate: new Date()
+      });
+
+      const finalReceipt = await generateBillReceipt(isTakeawayLike, entityName, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart, existingOrder.dailyOrderNumber, advanceDeduction);
+      const finalHtml = generateBillReceiptHtml(isTakeawayLike, entityName, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart, existingOrder.dailyOrderNumber, advanceDeduction);
       printViaBluetooth('bill', finalReceipt, finalHtml);
 
       // Instantly finish settlement & return without blocking popups!
       setIsSettleModalOpen(false);
+      setSelectedAdvanceBookingId('');
       setCart([]); setIsSavedForTable(false); setIsPreBillPrinted(false);
       onBack();
     } catch (err) {
@@ -431,13 +444,20 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
             }
           }
         }
-        // 📝 Record the full bill in the audit trail before it's gone
-        await logDeletedBill({ order: existingOrder, deletedBy: deletedByAdmin });
+        await logDeletedBill({
+          tableNumber: entityName,
+          isTakeaway: isTakeawayLike,
+          items: existingOrder.items,
+          netTotal: existingOrder.netTotal,
+          dailyOrderNumber: existingOrder.dailyOrderNumber,
+          deletedBy: deletedByAdmin,
+        });
         await db.orders.delete(existingOrder.id);
       }
       setCart([]);
       setIsSavedForTable(false);
       setIsPreBillPrinted(false);
+      setSelectedAdvanceBookingId('');
       Swal.fire({ icon: 'success', title: 'Bill Cleared Successfully! 🗑️', text: 'This slot is now empty.', toast: true, position: 'top-end', showConfirmButton: false, timer: 2500 });
     } catch (err) {
       console.error(err);
@@ -446,6 +466,26 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
   };
 
   // Calculations Logic
+  const selectedAdvanceBooking = activeAdvanceBookings.find(b => b.id.toString() === selectedAdvanceBookingId);
+  const advanceDeduction = selectedAdvanceBooking ? selectedAdvanceBooking.amount : (existingOrder?.advancePayment || 0);
+
+  const handleAdvanceDepositChange = async (bookingIdStr) => {
+    setSelectedAdvanceBookingId(bookingIdStr);
+    const booking = activeAdvanceBookings.find(b => b.id.toString() === bookingIdStr);
+    const advAmt = booking ? booking.amount : 0;
+    const advId = booking ? booking.id : null;
+
+    if (existingOrder) {
+      const gross = existingOrder.subTotal + existingOrder.totalServiceCharge;
+      const newNet = Math.max(0, gross - advAmt);
+      await db.orders.update(existingOrder.id, {
+        advancePayment: advAmt,
+        advanceBookingId: advId,
+        netTotal: newNet
+      });
+    }
+  };
+
   const calculateTotals = () => {
     let subTotal = 0;
     let totalServiceCharge = 0;
@@ -456,15 +496,18 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
         totalServiceCharge += (itemTotal * item.serviceChargePercentage) / 100;
       }
     });
-    return { subTotal, totalServiceCharge, netTotal: subTotal + totalServiceCharge };
+    const grossTotal = subTotal + totalServiceCharge;
+    const netTotal = Math.max(0, grossTotal - advanceDeduction);
+    return { subTotal, totalServiceCharge, grossTotal, netTotal };
   };
-  const { subTotal, totalServiceCharge, netTotal } = calculateTotals();
+  const { subTotal, totalServiceCharge, grossTotal, netTotal } = calculateTotals();
 
   const getSettlementTotals = () => {
     let discountAmount = 0;
-    if (discountType === 'PERCENT') discountAmount = (netTotal * parseFloat(discountValue || 0)) / 100;
+    if (discountType === 'PERCENT') discountAmount = (grossTotal * parseFloat(discountValue || 0)) / 100;
     else discountAmount = parseFloat(discountValue || 0);
-    return { discountAmount, finalTotal: Math.max(0, netTotal - discountAmount) };
+    const finalTotal = Math.max(0, grossTotal - discountAmount - advanceDeduction);
+    return { discountAmount, finalTotal };
   };
   const { discountAmount, finalTotal } = getSettlementTotals();
 
@@ -567,29 +610,59 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
           </div>
 
           {/* Workflow Bottom Section */}
-          <div className="border-t pt-2 space-y-2 shrink-0 bg-white text-xs">
+          <div className="border-t pt-2 space-y-1.5 shrink-0 bg-white text-xs">
             <div className="flex justify-between text-gray-500"><span>Sub Total</span><span className="font-bold">Rs.{subTotal.toFixed(2)}</span></div>
             <div className="flex justify-between text-amber-600 font-bold">
               <span>Service Charge {!serviceChargeApplies && '(0%)'}</span>
               <span>+Rs.{totalServiceCharge.toFixed(2)}</span>
             </div>
+            <div className="flex justify-between text-gray-700 font-bold">
+              <span>Gross Total</span>
+              <span>Rs.{grossTotal.toFixed(2)}</span>
+            </div>
+            {advanceDeduction > 0 && (
+              <div className="flex justify-between text-emerald-600 font-bold">
+                <span>Advance Deposit ({selectedAdvanceBooking?.customerName || 'Applied'})</span>
+                <span>-Rs.{advanceDeduction.toFixed(2)}</span>
+              </div>
+            )}
             <div className="flex justify-between text-base font-black text-indigo-700 border-t pt-1"><span>Net Total</span><span>Rs.{netTotal.toFixed(2)}</span></div>
 
             <div className="space-y-1.5 pt-1">
-              <button onClick={handleSaveOrderClick} className={`w-full text-white py-3 rounded-xl font-black text-sm transition shadow-sm ${isSavedForTable && cart.filter(i => !i.isSaved).length === 0 ? 'bg-gray-400 hover:bg-gray-500' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
-                {isSavedForTable && cart.filter(i => !i.isSaved).length === 0 ? '🔒 Re-Save (Admin Required)' : '💾 Save Order & Print KOT/BOT'}
+              <button onClick={handleSaveOrderClick} className={`w-full text-white py-2.5 rounded-xl font-black text-xs transition shadow-sm ${isSavedForTable && cart.filter(i => !i.isSaved).length === 0 ? 'bg-gray-400 hover:bg-gray-500' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
+                {isSavedForTable && cart.filter(i => !i.isSaved).length === 0 ? '🔒 Re-Save Order (Admin Required)' : '💾 Save Order & Print KOT/BOT'}
               </button>
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={handlePrintPreBillClick} disabled={!isSavedForTable} className={`py-2.5 rounded-xl font-black transition text-white ${!isSavedForTable ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : isPreBillPrinted ? 'bg-gray-400 hover:bg-gray-500' : 'bg-orange-500 hover:bg-orange-600'}`}>
-                  {isPreBillPrinted ? '🔒 Re-Print PreBill' : '🖨️ Print Pre-Bill'}
+
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  onClick={() => setIsAdvanceModalOpen(true)}
+                  className={`py-2.5 rounded-xl font-black text-xs transition border flex flex-col items-center justify-center ${
+                    advanceDeduction > 0
+                      ? 'bg-emerald-600 border-emerald-600 text-white shadow-sm'
+                      : 'bg-emerald-50 border-emerald-300 text-emerald-800 hover:bg-emerald-100'
+                  }`}
+                >
+                  <span className="text-[10px]">💳 Advance</span>
+                  <span className="text-[11px] truncate max-w-full">
+                    {advanceDeduction > 0 ? `-Rs.${advanceDeduction.toFixed(0)}` : 'Select'}
+                  </span>
                 </button>
-                <button onClick={() => setIsSettleModalOpen(true)} disabled={!isPreBillPrinted} className={`py-2.5 rounded-xl font-black transition text-white ${!isPreBillPrinted ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-gray-900 hover:bg-black'}`}>💰 Settle Bill</button>
+
+                <button onClick={handlePrintPreBillClick} disabled={!isSavedForTable} className={`py-2.5 rounded-xl font-black transition text-xs text-white flex flex-col items-center justify-center ${!isSavedForTable ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : isPreBillPrinted ? 'bg-gray-400 hover:bg-gray-500' : 'bg-orange-500 hover:bg-orange-600'}`}>
+                  <span className="text-[10px]">Pre-Bill</span>
+                  <span className="text-[11px]">{isPreBillPrinted ? '🔒 Re-Print' : '🖨️ Print'}</span>
+                </button>
+
+                <button onClick={() => setIsSettleModalOpen(true)} disabled={!isPreBillPrinted} className={`py-2.5 rounded-xl font-black transition text-xs text-white flex flex-col items-center justify-center ${!isPreBillPrinted ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-gray-900 hover:bg-black'}`}>
+                  <span className="text-[10px]">Settlement</span>
+                  <span className="text-[11px]">💰 Settle</span>
+                </button>
               </div>
 
               {cart.length > 0 && (
                 <button
                   onClick={() => triggerAdminCheck('CLEAR_BILL')}
-                  className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-xl font-black transition text-xs shadow-sm mt-1"
+                  className="w-full bg-red-600 hover:bg-red-700 text-white py-1.5 rounded-xl font-black transition text-[11px] shadow-sm mt-0.5"
                 >
                   🗑️ Clear Bill (Admin Required)
                 </button>
@@ -598,6 +671,66 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
           </div>
         </div>
       </div>
+
+      {/* 💳 ADVANCE BOOKING DEPOSIT SELECTION MODAL */}
+      {isAdvanceModalOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+          <div className="bg-white p-5 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl text-xs">
+            <div className="flex justify-between items-center border-b pb-2">
+              <h3 className="text-sm font-black text-gray-800 flex items-center space-x-2">
+                <span>💳</span>
+                <span>Apply Advance Booking Deposit</span>
+              </h3>
+              <button onClick={() => setIsAdvanceModalOpen(false)} className="text-gray-400 font-bold text-sm">✕</button>
+            </div>
+
+            <div>
+              <p className="text-[11px] text-gray-500 mb-2">Select an early booking deposit to deduct from this bill ({entityName}):</p>
+              <select
+                value={selectedAdvanceBookingId}
+                onChange={(e) => {
+                  handleAdvanceDepositChange(e.target.value);
+                }}
+                className="w-full p-3 border rounded-xl font-bold text-xs bg-emerald-50 border-emerald-300 text-emerald-900 focus:outline-none"
+              >
+                <option value="">-- No Advance Deposit Selected --</option>
+                {activeAdvanceBookings.map(b => (
+                  <option key={b.id} value={b.id}>
+                    {b.customerName} - Rs.{b.amount.toFixed(2)} ({b.paymentMethod} - {b.bookingDate})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {selectedAdvanceBooking && (
+              <div className="bg-emerald-100/70 border border-emerald-300 rounded-xl p-3 text-emerald-900 space-y-1">
+                <div className="font-black text-xs">✅ Selected Deposit Details</div>
+                <div className="flex justify-between text-[11px]"><span>Customer:</span><span className="font-bold">{selectedAdvanceBooking.customerName}</span></div>
+                <div className="flex justify-between text-[11px]"><span>Phone:</span><span className="font-bold">{selectedAdvanceBooking.phone || 'N/A'}</span></div>
+                <div className="flex justify-between text-[11px]"><span>Booking Date:</span><span className="font-bold">{selectedAdvanceBooking.bookingDate}</span></div>
+                <div className="flex justify-between text-[11px] font-black text-emerald-700 border-t border-emerald-200 pt-1 mt-1"><span>Deduction Amount:</span><span>-Rs.{selectedAdvanceBooking.amount.toFixed(2)}</span></div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              {selectedAdvanceBookingId && (
+                <button
+                  onClick={() => { handleAdvanceDepositChange(''); }}
+                  className="bg-red-50 text-red-600 hover:bg-red-100 py-2.5 rounded-xl font-black transition text-xs"
+                >
+                  Remove Deposit
+                </button>
+              )}
+              <button
+                onClick={() => setIsAdvanceModalOpen(false)}
+                className={`bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl font-black transition text-xs ${!selectedAdvanceBookingId ? 'col-span-2' : ''}`}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ADMIN SECURITY MODAL */}
       {isAdminModalOpen && (
@@ -648,6 +781,29 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
               <h3 className="text-base font-black text-gray-800">Settle & Close: {entityName}</h3>
               <button onClick={() => setIsSettleModalOpen(false)} className="text-gray-400 font-bold text-sm">✕</button>
             </div>
+
+            {/* APPLY ADVANCE BOOKING DEPOSIT */}
+            <div>
+              <label className="block font-bold text-gray-500 mb-1">💳 Apply Booking Advance Deposit</label>
+              <select
+                value={selectedAdvanceBookingId}
+                onChange={(e) => setSelectedAdvanceBookingId(e.target.value)}
+                className="w-full p-2.5 border rounded-xl font-bold text-xs bg-emerald-50 border-emerald-300 text-emerald-900"
+              >
+                <option value="">-- No Advance Deposit Selected --</option>
+                {activeAdvanceBookings.map(b => (
+                  <option key={b.id} value={b.id}>
+                    {b.customerName} (Rs.{b.amount.toFixed(2)} - {b.paymentMethod} - {b.bookingDate})
+                  </option>
+                ))}
+              </select>
+              {selectedAdvanceBooking && (
+                <div className="text-[10px] text-emerald-700 font-black mt-1">
+                  ✅ Deducting Rs.{selectedAdvanceBooking.amount.toFixed(2)} ({selectedAdvanceBooking.customerName}'s Deposit)
+                </div>
+              )}
+            </div>
+
             <div>
               <label className="block font-bold text-gray-500 mb-1">Apply Discount</label>
               <div className="flex space-x-2 mb-1.5">
@@ -656,17 +812,23 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
               </div>
               <input type="number" value={discountValue} onChange={(e) => setDiscountValue(e.target.value)} className="w-full p-2 border rounded-xl font-black text-sm" placeholder="0" />
             </div>
+
             <div>
               <label className="block font-bold text-gray-500 mb-1">Payment Method</label>
               <div className="grid grid-cols-3 gap-1.5">
                 {['CASH', 'CARD', 'TRANSFER'].map(m => <button key={m} onClick={() => setPaymentMethod(m)} className={`py-2 rounded-xl font-black border transition ${paymentMethod === m ? 'bg-gray-800 border-gray-800 text-white' : 'bg-white text-gray-500'}`}>{m}</button>)}
               </div>
             </div>
+
             <div className="bg-gray-50 p-3 rounded-xl space-y-1 border font-medium">
-              <div className="flex justify-between"><span>Gross Amount:</span><span>Rs.{netTotal.toFixed(2)}</span></div>
+              <div className="flex justify-between"><span>Gross Amount:</span><span>Rs.{grossTotal.toFixed(2)}</span></div>
+              {advanceDeduction > 0 && (
+                <div className="flex justify-between text-emerald-600 font-bold"><span>Advance Deposit Deducted:</span><span>-Rs.{advanceDeduction.toFixed(2)}</span></div>
+              )}
               <div className="flex justify-between text-red-500"><span>Discount:</span><span>-Rs.{discountAmount.toFixed(2)}</span></div>
               <div className="flex justify-between text-base font-black text-gray-900 border-t pt-1.5 mt-1.5"><span>Net Payable:</span><span className="text-emerald-600">Rs.{finalTotal.toFixed(2)}</span></div>
             </div>
+
             <button onClick={handleFinalSettle} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-xl font-black text-sm shadow-md transition">🤝 Complete Settlement & Print Receipt</button>
           </div>
         </div>

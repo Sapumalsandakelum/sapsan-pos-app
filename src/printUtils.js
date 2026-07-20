@@ -317,9 +317,8 @@ const printViaSerialPort = async (deviceInfo, targetRole, receiptDataArray) => {
   }
 };
 
-// 🎯 ROUTER — the printer assigned to each role in Admin → Printer Settings IS the
 // ==========================================
-// 🖨️ WINDOWS DRIVER PRINT MODE ENGINE (window.print())
+// 🖨️ WINDOWS DRIVER PRINT MODE (window.print())
 // ==========================================
 export const printViaWindowsDriver = async (htmlContent) => {
   try {
@@ -337,6 +336,7 @@ export const printViaWindowsDriver = async (htmlContent) => {
         const electron = window.require('electron');
         if (electron && electron.ipcRenderer) {
           const res = await electron.ipcRenderer.invoke('print-silent');
+          setTimeout(() => { if (container) container.innerHTML = ''; }, 500);
           if (res && res.success) return true;
         }
       } catch (e) {
@@ -346,6 +346,7 @@ export const printViaWindowsDriver = async (htmlContent) => {
 
     // Fallback for browser outside Electron
     window.print();
+    setTimeout(() => { if (container) container.innerHTML = ''; }, 1000);
     return true;
   } catch (err) {
     console.error('Windows Driver print failed:', err);
@@ -506,7 +507,7 @@ export const generateCancellationReceipt = (isTakeaway, tableName, item, orderNu
 // Bill / Pre-Bill / Final Invoice — fully customizable via Bill Design settings.
 // orderNumber is the daily-resetting sequential number (from getNextDailyOrderNumber()),
 // printed big & bold near the top; omit/null to hide it even if showOrderNumber is on.
-export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, orderNumber) => {
+export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, orderNumber, advancePaid = 0) => {
   const settings = getBillDesignSettings();
   const { rasterPx, charsPerLine } = PAPER_WIDTH_CONFIG[settings.paperWidth] || PAPER_WIDTH_CONFIG['80mm'];
 
@@ -572,16 +573,22 @@ export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub,
     data.push(ESC_FONT_NORMAL);
   }
 
-  const now = new Date();
-  data.push(textToBytes(`${isTakeaway ? 'Type' : 'Table'}: ${tableName}`));
-  heightMm += bodyLineMm;
-  data.push(textToBytes(`Date: ${now.toLocaleDateString()}  Time: ${now.toLocaleTimeString()}`));
-  heightMm += bodyLineMm;
-
   data.push(textToBytes('-'.repeat(charsPerLine)));
   heightMm += bodyLineMm;
-  data.push(ESC_ALIGN_LEFT);
 
+  data.push(ESC_ALIGN_LEFT);
+  data.push(textToBytes(`${isTakeaway ? 'Type' : 'Table'}: ${tableName}`));
+  heightMm += bodyLineMm;
+
+  data.push(ESC_ALIGN_CENTER);
+  data.push(textToBytes('-'.repeat(charsPerLine)));
+  heightMm += bodyLineMm;
+
+  const now = new Date();
+  data.push(textToBytes(`${now.toLocaleDateString()} ${now.toLocaleTimeString()}`));
+  heightMm += bodyLineMm;
+
+  data.push(ESC_ALIGN_LEFT);
   itemsList.forEach(item => {
     const lineTotal = (item.sellingPrice * item.quantity).toFixed(0);
     data.push(textToBytes(`${item.name}`));
@@ -592,8 +599,10 @@ export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub,
     data.push(ESC_ALIGN_LEFT);
   });
 
+  data.push(ESC_ALIGN_CENTER);
   data.push(textToBytes('-'.repeat(charsPerLine)));
   heightMm += bodyLineMm;
+
   data.push(ESC_ALIGN_RIGHT);
   data.push(textToBytes(`Sub Total: Rs.${sub.toFixed(2)}`));
   heightMm += bodyLineMm;
@@ -603,6 +612,14 @@ export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub,
     data.push(textToBytes(`Discount: -Rs.${disc.toFixed(2)}`));
     heightMm += bodyLineMm;
   }
+  if (advancePaid > 0) {
+    data.push(textToBytes(`Advance Deposit: -Rs.${advancePaid.toFixed(2)}`));
+    heightMm += bodyLineMm;
+  }
+
+  data.push(ESC_ALIGN_CENTER);
+  data.push(textToBytes('-'.repeat(charsPerLine)));
+  heightMm += bodyLineMm;
 
   // NET TOTAL — bold + visibly larger than the rest of the bill
   data.push(ESC_FONT_BOLD);
@@ -622,8 +639,6 @@ export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub,
   data.push(textToBytes(DEVELOPER_CREDIT_LINE_2));
   heightMm += LINE_HEIGHT_MM.NORMAL * 2;
 
-  // Pad remaining paper to reach the configured minimum bill height.
-  // This is an estimate (thermal printers don't report exact printed height back),
   // based on typical line heights per font size — close enough in practice.
   const minHeightMm = (settings.minBillHeightInch || 6) * 25.4;
   if (heightMm < minHeightMm) {
@@ -761,7 +776,7 @@ export const generateDayEndReceipt = (reportData) => {
 // ==========================================
 // 🌐 HTML RECEIPT GENERATORS MATCHING BILL DESIGN TAB PREVIEW
 // ==========================================
-export const generateBillReceiptHtml = (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, orderNumber) => {
+export const generateBillReceiptHtml = (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, orderNumber, advancePaid = 0) => {
   const settings = getBillDesignSettings();
   const widthPx = settings.paperWidth === '58mm' ? '230px' : '300px';
 
@@ -777,6 +792,7 @@ export const generateBillReceiptHtml = (isTakeaway, tableName, billTitle, sub, s
   const bodyFont = previewSizePx(settings.billFontSize);
   const netTotalFont = previewSizePx(bumpPreviewSize(settings.billFontSize));
   const now = new Date();
+  const grossTotal = sub + sc;
 
   let html = `<div style="width: ${widthPx}; font-family: monospace; font-size: ${bodyFont}; color: #000; margin: 0 auto; background: #fff; padding: 12px; box-sizing: border-box; line-height: 1.3;">`;
 
@@ -815,6 +831,10 @@ export const generateBillReceiptHtml = (isTakeaway, tableName, billTitle, sub, s
   html += `<div style="font-size: 10px;">`;
   html += `<div style="display: flex; justify-content: space-between;"><span>Sub Total:</span><span>Rs.${sub.toFixed(2)}</span></div>`;
   html += `<div style="display: flex; justify-content: space-between;"><span>Service Charge:</span><span>Rs.${sc.toFixed(2)}</span></div>`;
+  html += `<div style="display: flex; justify-content: space-between; font-weight: bold;"><span>Gross Total:</span><span>Rs.${grossTotal.toFixed(2)}</span></div>`;
+  if (advancePaid > 0) {
+    html += `<div style="display: flex; justify-content: space-between;"><span>Advance Deposit:</span><span>-Rs.${advancePaid.toFixed(2)}</span></div>`;
+  }
   if (disc > 0) {
     html += `<div style="display: flex; justify-content: space-between;"><span>Discount:</span><span>-Rs.${disc.toFixed(2)}</span></div>`;
   }
@@ -913,4 +933,30 @@ export const generateDayEndReceiptHtml = (reportData) => {
   html += `</div>`;
 
   return html;
+};
+
+export const generateAdvanceReceiptHtml = (booking) => {
+  const settings = getBillDesignSettings();
+  const widthPx = settings.paperWidth === '58mm' ? '230px' : '300px';
+  const now = new Date();
+
+  return `
+    <div style="width: ${widthPx}; font-family: monospace; font-size: 11px; color: #000; margin: 0 auto; background: #fff; padding: 12px; box-sizing: border-box; line-height: 1.3;">
+      <div style="text-align: center; font-weight: bold; font-size: 14px;">${settings.storeName || 'MY RESTAURANT'}</div>
+      <div style="text-align: center; font-weight: 900; font-size: 13px; margin: 4px 0;">*** ADVANCE BOOKING RECEIPT ***</div>
+      <div style="text-align: center; font-size: 10px; margin-bottom: 4px;">Issued: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}</div>
+      <div style="border-top: 1px dashed #9ca3af; border-bottom: 1px dashed #9ca3af; padding: 6px 0; margin: 4px 0;">
+        <div>Customer: <b>${booking.customerName}</b></div>
+        <div>Phone: <b>${booking.phone || 'N/A'}</b></div>
+        <div>Booking Date: <b>${booking.bookingDate}</b></div>
+        ${booking.notes ? `<div>Notes: ${booking.notes}</div>` : ''}
+      </div>
+      <div style="font-size: 12px; font-weight: 900; text-align: center; margin: 8px 0;">
+        ADVANCE PAID: Rs.${parseFloat(booking.amount || 0).toFixed(2)} (${booking.paymentMethod})
+      </div>
+      <div style="border-top: 1px dashed #9ca3af; margin: 6px 0;"></div>
+      <div style="text-align: center; font-size: 10px;">Please present this receipt upon final billing.</div>
+      <div style="text-align: center; font-size: 8px; color: #9ca3af; margin-top: 8px; line-height: 1.2;"><div>${DEVELOPER_CREDIT_LINE_1}</div><div>${DEVELOPER_CREDIT_LINE_2}</div></div>
+    </div>
+  `;
 };

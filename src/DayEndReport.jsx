@@ -44,7 +44,7 @@ export default function DayEndReport({ onBack, onDayClosed }) {
   });
 
   // Metrics
-  let totalNetSales = 0, totalDiscounts = 0, totalServiceCharge = 0, totalItemsSold = 0;
+  let totalNetSales = 0, totalDiscounts = 0, totalServiceCharge = 0, totalItemsSold = 0, totalAdvanceRedeemed = 0;
   const paymentMap = { CASH: 0, CARD: 0, TRANSFER: 0 };
   const cashierMap = {};
   const productMap = {};
@@ -53,6 +53,7 @@ export default function DayEndReport({ onBack, onDayClosed }) {
     totalNetSales += o.netTotal || 0;
     totalDiscounts += o.discountAmount || 0;
     totalServiceCharge += o.totalServiceCharge || 0;
+    totalAdvanceRedeemed += o.advancePayment || 0;
     if (paymentMap[o.paymentMethod] !== undefined) paymentMap[o.paymentMethod] += o.netTotal || 0;
     const cashierKey = o.cashierName || 'Admin Cashier';
     cashierMap[cashierKey] = (cashierMap[cashierKey] || 0) + (o.netTotal || 0);
@@ -64,6 +65,7 @@ export default function DayEndReport({ onBack, onDayClosed }) {
     });
   });
 
+  const totalGrossRevenue = totalNetSales + totalAdvanceRedeemed;
   const topProducts = Object.entries(productMap).map(([name, d]) => ({ name, ...d })).sort((a, b) => b.qty - a.qty).slice(0, 10);
   const cashierList = Object.entries(cashierMap).map(([name, revenue]) => ({ name, revenue })).sort((a, b) => b.revenue - a.revenue);
 
@@ -147,7 +149,7 @@ export default function DayEndReport({ onBack, onDayClosed }) {
 
       const reportObj = {
         daySession: sessionToPrint,
-        totalNetSales, totalDiscounts, totalServiceCharge, totalItemsSold,
+        totalNetSales, totalDiscounts, totalServiceCharge, totalItemsSold, totalAdvanceRedeemed, totalGrossRevenue,
         totalOrders: todaysOrders.length,
         paymentMap, cashierList, topProducts,
         cashExpected: expected,
@@ -180,25 +182,33 @@ export default function DayEndReport({ onBack, onDayClosed }) {
 
   const handleExportCsv = () => {
     const rows = [
-      ['Metric', 'Value'],
-      ['Date', new Date().toLocaleDateString()],
-      ['Total Orders', todaysOrders.length],
-      ['Net Sales', totalNetSales.toFixed(2)],
-      ['Items Sold', totalItemsSold],
-      ['Service Charge', totalServiceCharge.toFixed(2)],
-      ['Discounts Given', totalDiscounts.toFixed(2)],
-      ['Cash Sales', paymentMap.CASH.toFixed(2)],
-      ['Card Sales', paymentMap.CARD.toFixed(2)],
-      ['Transfer Sales', paymentMap.TRANSFER.toFixed(2)],
-      ['Deleted Items', todaysDeletedItems.length],
-      ['Deleted Bills', todaysDeletedBills.length],
+      ['Metric / Description', 'Value (Rs. / Count)'],
+      ['Business Date', daySession ? daySession.dateKey : new Date().toLocaleDateString()],
+      ['Session Started At', daySession ? `${new Date(daySession.startedAt).toLocaleString()} (${daySession.startedBy})` : '-'],
+      ['Session Closed At', daySession && daySession.endedAt ? `${new Date(daySession.endedAt).toLocaleString()} (${daySession.endedBy})` : 'Open Session'],
+      ['Total Orders Count', todaysOrders.length],
+      ['Total Items Sold', totalItemsSold],
+      ['Total Gross Order Value (Rs.)', totalGrossRevenue.toFixed(2)],
+      ['Advance Deposits Applied (Rs.)', totalAdvanceRedeemed.toFixed(2)],
+      ['Net Settled Cash/Card Revenue (Rs.)', totalNetSales.toFixed(2)],
+      ['Service Charge Collected (Rs.)', totalServiceCharge.toFixed(2)],
+      ['Discounts Given (Rs.)', totalDiscounts.toFixed(2)],
+      ['Cash Collected (Rs.)', paymentMap.CASH.toFixed(2)],
+      ['Card Collected (Rs.)', paymentMap.CARD.toFixed(2)],
+      ['Bank Transfer Collected (Rs.)', paymentMap.TRANSFER.toFixed(2)],
+      ['Expected Cash in Drawer (Rs.)', (cashExpected || 0).toFixed(2)],
+      ['Counted Cash (Rs.)', cashCounted != null ? cashCounted.toFixed(2) : 'Not Counted'],
+      ['Cash Variance (Rs.)', cashVariance != null ? cashVariance.toFixed(2) : '0.00'],
+      ['Deleted Items Count', todaysDeletedItems.length],
+      ['Deleted Bills Count', todaysDeletedBills.length],
     ];
-    const csv = rows.map(r => r.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const escapeCsvValue = (val) => `"${String(val ?? '').replace(/"/g, '""')}"`;
+    const content = '\uFEFF' + rows.map(r => r.map(escapeCsvValue).join(',')).join('\n');
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `day-end-report-${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `day-end-report-${daySession ? daySession.dateKey : new Date().toISOString().split('T')[0]}.csv`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
@@ -212,8 +222,10 @@ export default function DayEndReport({ onBack, onDayClosed }) {
           <button onClick={onBack} className="bg-gray-100 hover:bg-gray-200 text-gray-600 px-3 py-1.5 rounded-xl font-black text-xs transition">← Back</button>
           <h1 className="text-lg font-black text-gray-800">📊 Day End Report</h1>
           <div className="flex space-x-2">
-            <button onClick={handleExportCsv} className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-lg font-black text-[10px] transition">⬇️ CSV</button>
-            <button onClick={handleThermalPrint} disabled={isPrinting} className="bg-gray-50 hover:bg-gray-100 disabled:bg-gray-100 text-gray-600 border border-gray-200 px-3 py-1.5 rounded-lg font-black text-[10px] transition">
+            <button onClick={handleExportCsv} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-xl font-black text-xs transition flex items-center space-x-1 shadow-sm">
+              <span>📊 Export to Excel (.csv)</span>
+            </button>
+            <button onClick={handleThermalPrint} disabled={isPrinting} className="bg-gray-50 hover:bg-gray-100 disabled:bg-gray-100 text-gray-600 border border-gray-200 px-3 py-1.5 rounded-xl font-black text-xs transition">
               {isPrinting ? '⏳ Printing...' : '🖨️ Print'}
             </button>
           </div>

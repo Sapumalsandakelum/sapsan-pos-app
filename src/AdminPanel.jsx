@@ -496,11 +496,12 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   // ==========================================
   const escapeCsvValue = (val) => {
     const str = String(val ?? '');
-    return (str.includes(',') || str.includes('"') || str.includes('\n')) ? `"${str.replace(/"/g, '""')}"` : str;
+    return `"${str.replace(/"/g, '""')}"`;
   };
   const downloadCsv = (filename, headers, rows) => {
-    const lines = [headers.join(','), ...rows.map(row => row.map(escapeCsvValue).join(','))];
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    // Add UTF-8 Byte Order Mark (\uFEFF) so Excel opens CSV automatically formatted in columns
+    const content = '\uFEFF' + [headers.map(escapeCsvValue).join(','), ...rows.map(row => row.map(escapeCsvValue).join(','))].join('\n');
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -518,7 +519,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     let rows = [];
 
     if (reportType === 'SUMMARY' || reportType === 'INVOICE') {
-      headers = ['Date/Time', 'Bill No', 'Table', 'Cashier', 'Payment', 'Items', 'Discount', 'Net Total'];
+      headers = ['Date/Time', 'Order No', 'Table/Type', 'Cashier', 'Payment Method', 'Items List', 'Sub Total (Rs.)', 'Service Charge (Rs.)', 'Discount (Rs.)', 'Net Total (Rs.)'];
       rows = sortedInvoiceList.map(o => [
         o.settledDate ? new Date(o.settledDate).toLocaleString() : '-',
         o.dailyOrderNumber ?? '',
@@ -526,35 +527,47 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
         o.cashierName || 'Admin Cashier',
         o.paymentMethod || '',
         (o.items || []).map(it => `${it.name} x${it.quantity}`).join('; '),
+        (o.subTotal || 0).toFixed(2),
+        (o.totalServiceCharge || 0).toFixed(2),
         (o.discountAmount || 0).toFixed(2),
         (o.netTotal || 0).toFixed(2),
       ]);
-    } else if (reportType === 'PRODUCT' || reportType === 'PROFIT') {
-      headers = ['Item', 'Qty Sold', 'Revenue', '% of Sales'];
+    } else if (reportType === 'PRODUCT') {
+      headers = ['Item Name', 'Qty Sold', 'Revenue (Rs.)', '% of Total Sales'];
       rows = productSalesList.map(p => [p.name, p.qty, p.revenue.toFixed(2), totalNetSales > 0 ? ((p.revenue / totalNetSales) * 100).toFixed(1) : '0.0']);
+    } else if (reportType === 'PROFIT') {
+      headers = ['Item Name', 'Qty Sold', 'Cost Price (Rs.)', 'Selling Price (Rs.)', 'Total Cost (Rs.)', 'Total Revenue (Rs.)', 'Gross Profit (Rs.)', 'Margin %'];
+      rows = productSalesList.map(p => {
+        const costPrice = p.costPrice || 0;
+        const totalCost = costPrice * p.qty;
+        const totalRev = p.revenue;
+        const profit = totalRev - totalCost;
+        const margin = totalRev > 0 ? ((profit / totalRev) * 100).toFixed(1) : '0.0';
+        return [p.name, p.qty, costPrice.toFixed(2), (p.sellingPrice || 0).toFixed(2), totalCost.toFixed(2), totalRev.toFixed(2), profit.toFixed(2), `${margin}%`];
+      });
     } else if (reportType === 'CATEGORY') {
-      headers = ['Category', 'Revenue', '% of Sales'];
+      headers = ['Category Name', 'Total Revenue (Rs.)', '% of Total Sales'];
       rows = categorySalesList.map(c => [c.name, c.revenue.toFixed(2), totalNetSales > 0 ? ((c.revenue / totalNetSales) * 100).toFixed(1) : '0.0']);
     } else if (reportType === 'BEST_SELLING') {
-      headers = ['Rank', 'Item', 'Qty Sold', 'Revenue'];
+      headers = ['Rank', 'Item Name', 'Qty Sold', 'Total Revenue (Rs.)'];
       rows = bestSellersList.map((p, i) => [i + 1, p.name, p.qty, p.revenue.toFixed(2)]);
     } else if (reportType === 'CUSTOMER') {
-      headers = ['Table', 'Orders', 'Revenue'];
+      headers = ['Table / Service Slot', 'Orders Count', 'Total Revenue (Rs.)'];
       rows = customerSalesList.map(c => [c.name, c.count, c.revenue.toFixed(2)]);
     } else if (reportType === 'CASHIER') {
-      headers = ['Cashier', 'Orders', 'Revenue'];
+      headers = ['Cashier Name', 'Orders Count', 'Total Revenue (Rs.)'];
       rows = cashierSalesList.map(c => [c.name, c.count, c.revenue.toFixed(2)]);
     } else if (reportType === 'PAYMENT_METHOD') {
-      headers = ['Method', 'Amount', '% of Sales'];
+      headers = ['Payment Method', 'Total Amount (Rs.)', '% of Sales'];
       rows = paymentMethodList.map(p => [p.method, p.amount.toFixed(2), p.percent.toFixed(1)]);
     } else if (reportType === 'DISCOUNT') {
-      headers = ['Date', 'Table', 'Discount', 'Net Total'];
-      rows = discountedOrdersList.map(o => [o.settledDate ? new Date(o.settledDate).toLocaleString() : '-', o.tableNumber || 'Walk-in', (o.discountAmount || 0).toFixed(2), (o.netTotal || 0).toFixed(2)]);
+      headers = ['Date/Time', 'Order No', 'Table', 'Discount (Rs.)', 'Net Total (Rs.)'];
+      rows = discountedOrdersList.map(o => [o.settledDate ? new Date(o.settledDate).toLocaleString() : '-', o.dailyOrderNumber ?? '', o.tableNumber || 'Walk-in', (o.discountAmount || 0).toFixed(2), (o.netTotal || 0).toFixed(2)]);
     } else if (reportType === 'DELETED_ITEMS') {
-      headers = ['Deleted At', 'Order No', 'Table', 'Item', 'Qty', 'Value', 'Deleted By (Admin)'];
+      headers = ['Deleted At', 'Order No', 'Table', 'Item Name', 'Quantity', 'Line Total (Rs.)', 'Deleted By (Admin)'];
       rows = deletedItemsList.map(l => [new Date(l.deletedAt).toLocaleString(), l.dailyOrderNumber ?? '', l.tableNumber || 'Walk-in', l.itemName, l.quantity, l.lineTotal.toFixed(2), l.deletedBy || 'Unknown']);
     } else if (reportType === 'DELETED_BILLS') {
-      headers = ['Deleted At', 'Order No', 'Table', 'Items', 'Net Total', 'Deleted By (Admin)'];
+      headers = ['Deleted At', 'Order No', 'Table', 'Items List', 'Net Total (Rs.)', 'Deleted By (Admin)'];
       rows = deletedBillsList.map(l => [new Date(l.deletedAt).toLocaleString(), l.dailyOrderNumber ?? '', l.tableNumber || 'Walk-in', (l.items || []).map(it => `${it.name} x${it.quantity}`).join('; '), (l.netTotal || 0).toFixed(2), l.deletedBy || 'Unknown']);
     }
 
@@ -563,6 +576,182 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
       return;
     }
     downloadCsv(filename, headers, rows);
+  };
+
+  const handlePrintReport = async () => {
+    try {
+      const dateStr = new Date().toLocaleDateString();
+      const timeStr = new Date().toLocaleTimeString();
+      const title = currentReportMeta.label.toUpperCase();
+      const settings = getBillDesignSettings();
+      const widthPx = settings.paperWidth === '58mm' ? '230px' : '300px';
+
+      let bodyHtml = '';
+
+      if (reportType === 'SUMMARY' || reportType === 'INVOICE') {
+        bodyHtml += `<div style="font-size:10px; margin-bottom:6px;"><b>Total Sales: Rs.${totalNetSales.toFixed(2)}</b> (${sortedInvoiceList.length} orders)</div>`;
+        bodyHtml += `<table style="width:100%; font-size:9px; border-collapse:collapse; text-align:left;">
+          <thead>
+            <tr style="border-bottom:1px dashed #000;"><th>Bill#</th><th>Table</th><th>Pay</th><th style="text-align:right;">Net</th></tr>
+          </thead>
+          <tbody>`;
+        sortedInvoiceList.forEach(o => {
+          bodyHtml += `<tr>
+            <td>#${o.dailyOrderNumber ?? ''}</td>
+            <td>${o.tableNumber || 'Walk-in'}</td>
+            <td>${o.paymentMethod || ''}</td>
+            <td style="text-align:right;">Rs.${(o.netTotal || 0).toFixed(0)}</td>
+          </tr>`;
+        });
+        bodyHtml += `</tbody></table>`;
+      } else if (reportType === 'PRODUCT' || reportType === 'PROFIT') {
+        bodyHtml += `<table style="width:100%; font-size:9px; border-collapse:collapse; text-align:left;">
+          <thead>
+            <tr style="border-bottom:1px dashed #000;"><th>Item</th><th>Qty</th><th style="text-align:right;">Rev</th></tr>
+          </thead>
+          <tbody>`;
+        productSalesList.forEach(p => {
+          bodyHtml += `<tr>
+            <td>${p.name}</td>
+            <td>${p.qty}</td>
+            <td style="text-align:right;">Rs.${p.revenue.toFixed(0)}</td>
+          </tr>`;
+        });
+        bodyHtml += `</tbody></table>`;
+      } else if (reportType === 'CATEGORY') {
+        bodyHtml += `<table style="width:100%; font-size:9px; border-collapse:collapse; text-align:left;">
+          <thead>
+            <tr style="border-bottom:1px dashed #000;"><th>Category</th><th style="text-align:right;">Rev</th><th style="text-align:right;">%</th></tr>
+          </thead>
+          <tbody>`;
+        categorySalesList.forEach(c => {
+          const pct = totalNetSales > 0 ? ((c.revenue / totalNetSales) * 100).toFixed(1) : '0.0';
+          bodyHtml += `<tr>
+            <td>${c.name}</td>
+            <td style="text-align:right;">Rs.${c.revenue.toFixed(0)}</td>
+            <td style="text-align:right;">${pct}%</td>
+          </tr>`;
+        });
+        bodyHtml += `</tbody></table>`;
+      } else if (reportType === 'BEST_SELLING') {
+        bodyHtml += `<table style="width:100%; font-size:9px; border-collapse:collapse; text-align:left;">
+          <thead>
+            <tr style="border-bottom:1px dashed #000;"><th>#</th><th>Item</th><th style="text-align:right;">Qty</th></tr>
+          </thead>
+          <tbody>`;
+        bestSellersList.forEach((p, i) => {
+          bodyHtml += `<tr>
+            <td>${i + 1}</td>
+            <td>${p.name}</td>
+            <td style="text-align:right;">${p.qty}</td>
+          </tr>`;
+        });
+        bodyHtml += `</tbody></table>`;
+      } else if (reportType === 'CUSTOMER') {
+        bodyHtml += `<table style="width:100%; font-size:9px; border-collapse:collapse; text-align:left;">
+          <thead>
+            <tr style="border-bottom:1px dashed #000;"><th>Table</th><th>Orders</th><th style="text-align:right;">Rev</th></tr>
+          </thead>
+          <tbody>`;
+        customerSalesList.forEach(c => {
+          bodyHtml += `<tr>
+            <td>${c.name}</td>
+            <td>${c.count}</td>
+            <td style="text-align:right;">Rs.${c.revenue.toFixed(0)}</td>
+          </tr>`;
+        });
+        bodyHtml += `</tbody></table>`;
+      } else if (reportType === 'CASHIER') {
+        bodyHtml += `<table style="width:100%; font-size:9px; border-collapse:collapse; text-align:left;">
+          <thead>
+            <tr style="border-bottom:1px dashed #000;"><th>Cashier</th><th>Orders</th><th style="text-align:right;">Rev</th></tr>
+          </thead>
+          <tbody>`;
+        cashierSalesList.forEach(c => {
+          bodyHtml += `<tr>
+            <td>${c.name}</td>
+            <td>${c.count}</td>
+            <td style="text-align:right;">Rs.${c.revenue.toFixed(0)}</td>
+          </tr>`;
+        });
+        bodyHtml += `</tbody></table>`;
+      } else if (reportType === 'PAYMENT_METHOD') {
+        bodyHtml += `<table style="width:100%; font-size:9px; border-collapse:collapse; text-align:left;">
+          <thead>
+            <tr style="border-bottom:1px dashed #000;"><th>Method</th><th style="text-align:right;">Amt</th><th style="text-align:right;">%</th></tr>
+          </thead>
+          <tbody>`;
+        paymentMethodList.forEach(p => {
+          bodyHtml += `<tr>
+            <td>${p.method}</td>
+            <td style="text-align:right;">Rs.${p.amount.toFixed(0)}</td>
+            <td style="text-align:right;">${p.percent.toFixed(1)}%</td>
+          </tr>`;
+        });
+        bodyHtml += `</tbody></table>`;
+      } else if (reportType === 'DISCOUNT') {
+        bodyHtml += `<table style="width:100%; font-size:9px; border-collapse:collapse; text-align:left;">
+          <thead>
+            <tr style="border-bottom:1px dashed #000;"><th>Bill#</th><th>Table</th><th style="text-align:right;">Disc</th></tr>
+          </thead>
+          <tbody>`;
+        discountedOrdersList.forEach(o => {
+          bodyHtml += `<tr>
+            <td>#${o.dailyOrderNumber ?? ''}</td>
+            <td>${o.tableNumber || 'Walk-in'}</td>
+            <td style="text-align:right;">Rs.${(o.discountAmount || 0).toFixed(0)}</td>
+          </tr>`;
+        });
+        bodyHtml += `</tbody></table>`;
+      } else if (reportType === 'DELETED_ITEMS') {
+        bodyHtml += `<table style="width:100%; font-size:9px; border-collapse:collapse; text-align:left;">
+          <thead>
+            <tr style="border-bottom:1px dashed #000;"><th>Bill#</th><th>Item</th><th>Qty</th><th style="text-align:right;">Val</th></tr>
+          </thead>
+          <tbody>`;
+        deletedItemsList.forEach(l => {
+          bodyHtml += `<tr>
+            <td>#${l.dailyOrderNumber ?? ''}</td>
+            <td>${l.itemName}</td>
+            <td>${l.quantity}</td>
+            <td style="text-align:right;">Rs.${l.lineTotal.toFixed(0)}</td>
+          </tr>`;
+        });
+        bodyHtml += `</tbody></table>`;
+      } else if (reportType === 'DELETED_BILLS') {
+        bodyHtml += `<table style="width:100%; font-size:9px; border-collapse:collapse; text-align:left;">
+          <thead>
+            <tr style="border-bottom:1px dashed #000;"><th>Bill#</th><th>Table</th><th style="text-align:right;">Net</th></tr>
+          </thead>
+          <tbody>`;
+        deletedBillsList.forEach(l => {
+          bodyHtml += `<tr>
+            <td>#${l.dailyOrderNumber ?? ''}</td>
+            <td>${l.tableNumber || 'Walk-in'}</td>
+            <td style="text-align:right;">Rs.${(l.netTotal || 0).toFixed(0)}</td>
+          </tr>`;
+        });
+        bodyHtml += `</tbody></table>`;
+      }
+
+      const reportHtml = `
+        <div style="width: ${widthPx}; font-family: monospace; font-size: 11px; color: #000; margin: 0 auto; background: #fff; padding: 10px; box-sizing: border-box; line-height: 1.3;">
+          <div style="text-align: center; font-weight: bold; font-size: 14px;">${settings.storeName || 'MY RESTAURANT'}</div>
+          <div style="text-align: center; font-weight: 900; font-size: 13px; margin: 2px 0;">*** ${title} ***</div>
+          <div style="text-align: center; font-size: 10px; color: #555; margin-bottom: 4px;">Range: ${dateRangeLabel}<br/>Printed: ${dateStr} ${timeStr}</div>
+          <div style="border-top: 1px dashed #9ca3af; margin: 4px 0;"></div>
+          ${bodyHtml}
+          <div style="border-top: 1px dashed #9ca3af; margin: 6px 0;"></div>
+          <div style="text-align: center; font-size: 8px; color: #9ca3af; line-height: 1.2;"><div>${DEVELOPER_CREDIT_LINE_1}</div><div>${DEVELOPER_CREDIT_LINE_2}</div></div>
+        </div>
+      `;
+
+      await printViaBluetooth('bill', [], reportHtml);
+      Swal.fire({ icon: 'success', title: 'Report Sent to Printer! 🖨️', toast: true, position: 'top-end', showConfirmButton: false, timer: 1800 });
+    } catch (err) {
+      console.error('Report print error:', err);
+      Swal.fire({ icon: 'error', title: 'Report Print Failed', text: err.message });
+    }
   };
 
   // ==========================================
@@ -1851,11 +2040,11 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                 <span>{currentReportMeta.icon} {currentReportMeta.label} <span className="text-gray-400 font-bold normal-case ml-1">· {dateRangeLabel}</span></span>
                 <div className="flex items-center space-x-2">
                   <span className="text-gray-400 font-bold normal-case">{currentRecordCount} record(s)</span>
-                  <button onClick={handleExportCsv} className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-lg font-black text-[10px] transition">
-                    ⬇️ CSV
+                  <button onClick={handleExportCsv} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded-xl font-black text-xs transition flex items-center space-x-1 shadow-sm">
+                    <span>📊 Export to Excel (.csv)</span>
                   </button>
-                  <button onClick={() => window.print()} className="bg-gray-50 hover:bg-gray-100 text-gray-600 border border-gray-200 px-2.5 py-1 rounded-lg font-black text-[10px] transition">
-                    🖨️ Print
+                  <button onClick={handlePrintReport} className="bg-gray-800 hover:bg-gray-900 text-white px-3 py-1 rounded-xl font-black text-xs transition flex items-center space-x-1 shadow-sm">
+                    <span>🖨️ Print Report</span>
                   </button>
                 </div>
               </div>
@@ -2846,13 +3035,15 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                   </div>
                   <div className="border-t border-dashed border-gray-400 my-1"></div>
                   <div className="text-[9px] space-y-0.5">
-                    <div className="flex justify-between"><span>Sub Total:</span><span>Rs.950.00</span></div>
-                    <div className="flex justify-between"><span>Service Charge:</span><span>Rs.95.00</span></div>
+                    <div className="flex justify-between"><span>Sub Total:</span><span>Rs.8950.00</span></div>
+                    <div className="flex justify-between"><span>Service Charge:</span><span>Rs.895.00</span></div>
+                    <div className="flex justify-between font-bold"><span>Gross Total:</span><span>Rs.9845.00</span></div>
+                    <div className="flex justify-between text-emerald-600 font-bold"><span>Advance Deposit:</span><span>-Rs.2000.00</span></div>
                     <div
                       className="flex justify-between font-black border-t border-dashed pt-1 mt-1"
                       style={{ fontSize: previewSizePx(bumpPreviewSize(billDesignForm.billFontSize)) }}
                     >
-                      <span>NET TOTAL:</span><span>Rs.1045.00</span>
+                      <span>NET TOTAL:</span><span>Rs.7845.00</span>
                     </div>
                   </div>
                   <div className="text-center text-[9px] mt-2">{billDesignForm.footerMessage || 'Thank You! Come Again.'}</div>

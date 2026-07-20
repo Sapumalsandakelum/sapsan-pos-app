@@ -42,6 +42,7 @@ function AppContent() {
 
   const [activeDaySession, setActiveDaySession] = useState(null);
   const [loadingSession, setLoadingSession] = useState(true);
+  const [showDayStatusModal, setShowDayStatusModal] = useState(false);
 
   const checkActiveSession = async () => {
     if (!session) {
@@ -51,25 +52,6 @@ function AppContent() {
     try {
       const active = await getActiveSession();
       setActiveDaySession(active);
-      if (active) {
-        const todayStr = new Date().toISOString().split('T')[0];
-        if (active.dateKey !== todayStr) {
-          Swal.fire({
-            title: '⚠️ Previous Day Not Closed!',
-            html: `The business day for <b>${active.dateKey}</b> (started by ${active.startedBy}) was not closed.<br/><br/>Please perform Day End to close it.`,
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonText: '📊 Go to Day End',
-            cancelButtonText: '🔄 Continue Shift',
-            confirmButtonColor: '#4f46e5',
-            cancelButtonColor: '#6b7280'
-          }).then((result) => {
-            if (result.isConfirmed) {
-              setCurrentScreen('DAY_END');
-            }
-          });
-        }
-      }
     } catch (err) {
       console.error('Failed to check active session', err);
     } finally {
@@ -147,8 +129,21 @@ function AppContent() {
     });
   };
 
-  // Cashiers see Billing and Day End — Dashboard/Admin Panel stay admin-only
+  // Cashiers see Billing and Day End — Dashboard/Admin Panel stay admin-only.
+  // STRICT GATING: Without an active open day session, navigation to Billing, Dashboard, or Admin is blocked.
   const handleTabClick = (screen) => {
+    if (!activeDaySession && screen !== 'DAY_END') {
+      Swal.fire({
+        icon: 'warning',
+        title: 'Business Day Closed 🔒',
+        text: 'You must open/start the business day first before accessing any other section.',
+        confirmButtonColor: '#059669',
+        confirmButtonText: '🚀 Open Day'
+      }).then((result) => {
+        if (result.isConfirmed) triggerStartDayPrompt();
+      });
+      return;
+    }
     const cashierAllowed = screen === 'BILLING' || screen === 'DAY_END';
     if (!cashierAllowed && !isAdmin) return;
     if (screen === 'BILLING') setBillingResetKey((k) => k + 1);
@@ -162,6 +157,20 @@ function AppContent() {
         <div className="flex items-center space-x-2">
           <span className="text-2xl font-black text-indigo-600 tracking-tighter">SapSan POS</span>
           <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-md font-black">v2.0</span>
+          
+          {/* Day Status Badge */}
+          <button
+            onClick={() => setShowDayStatusModal(true)}
+            title="Click to view current business day status, perform Day End, or start shift"
+            className={`flex items-center space-x-1 px-2.5 py-1 rounded-xl text-xs font-black ml-2 border cursor-pointer hover:opacity-80 transition ${
+              activeDaySession 
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
+                : 'bg-red-50 border-red-200 text-red-700'
+            }`}
+          >
+            <span>{activeDaySession ? '🟢' : '🔴'}</span>
+            <span>{activeDaySession ? `Day Open (${activeDaySession.dateKey})` : 'Day Closed'}</span>
+          </button>
         </div>
 
         {/* Dynamic Navigation Tabs */}
@@ -170,7 +179,7 @@ function AppContent() {
             onClick={() => handleTabClick('BILLING')}
             className={`px-4 py-2 text-xs font-black rounded-xl transition ${currentScreen === 'BILLING' ? 'bg-indigo-50 text-indigo-600 border border-indigo-200' : 'text-gray-500 hover:bg-gray-50'}`}
           >
-            🛒 Billing Screen
+            🛒 Billing Screen {!activeDaySession && '🔒'}
           </button>
 
           <button
@@ -185,7 +194,7 @@ function AppContent() {
               onClick={() => handleTabClick('DASHBOARD')}
               className={`px-4 py-2 text-xs font-black rounded-xl transition ${currentScreen === 'DASHBOARD' ? 'bg-indigo-50 text-indigo-600 border border-indigo-200' : 'text-gray-500 hover:bg-gray-50'}`}
             >
-              📈 Dashboard
+              📈 Dashboard {!activeDaySession && '🔒'}
             </button>
           )}
 
@@ -194,11 +203,11 @@ function AppContent() {
               onClick={() => handleTabClick('ADMIN')}
               className={`px-4 py-2 text-xs font-black rounded-xl transition ${currentScreen === 'ADMIN' ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}
             >
-              ⚙️ Admin Panel
+              ⚙️ Admin Panel {!activeDaySession && '🔒'}
             </button>
           )}
 
-          {/* 🌐 LAN Sync status — always visible, no need to open Admin Panel to check */}
+          {/* 🌐 LAN Sync status */}
           {syncStatus !== 'not_configured' && (
             <div
               title={
@@ -217,7 +226,7 @@ function AppContent() {
             </div>
           )}
 
-          {/* 👤 Logged-in user + Logout — shown for both Admin and Cashier */}
+          {/* 👤 Logged-in user + Logout */}
           <div className="flex items-center space-x-2 ml-2 pl-3 border-l">
             <div className="flex items-center space-x-1.5 bg-gray-50 border rounded-xl px-2.5 py-1.5">
               <span className="text-sm">{isAdmin ? '👑' : '🧑‍💼'}</span>
@@ -238,55 +247,126 @@ function AppContent() {
         </div>
       </nav>
 
-      {/* 📲 SCREEN RENDERING */}
-      <main className="flex-1 overflow-hidden flex flex-col h-full">
-        {currentScreen === 'BILLING' && (
-          activeDaySession ? (
-            <POSFlow key={billingResetKey} currentUser={session} onLogout={handleLogout} activeDaySession={activeDaySession} />
-          ) : (
-            <div className="flex-1 flex flex-col items-center justify-center bg-gray-50 p-6">
-              <div className="max-w-md w-full text-center space-y-6 bg-white p-8 rounded-3xl border border-gray-200 shadow-xl relative overflow-hidden transition-all duration-300 hover:shadow-2xl">
-                <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-emerald-400 via-teal-500 to-indigo-600"></div>
-                <div className="inline-flex items-center justify-center w-24 h-24 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100 text-5xl mb-2">
-                  🗓️
+      {/* 📅 DAY SESSION STATUS OVERVIEW MODAL */}
+      {showDayStatusModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
+          <div className="bg-white p-6 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl text-center text-xs relative overflow-hidden border">
+            <div className={`absolute top-0 left-0 right-0 h-2 ${activeDaySession ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
+            
+            <div className={`inline-flex items-center justify-center w-16 h-16 rounded-full text-3xl mx-auto ${activeDaySession ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' : 'bg-red-50 text-red-600 border border-red-200'}`}>
+              {activeDaySession ? '🗓️' : '🔒'}
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-black text-gray-800">
+                {activeDaySession ? 'Business Day Currently Active' : 'Business Day Closed'}
+              </h3>
+              <p className="text-[11px] text-gray-500">
+                {activeDaySession ? 'Details of the business day currently started:' : 'No business day is currently open.'}
+              </p>
+            </div>
+
+            {activeDaySession ? (
+              <div className="bg-gray-50 border rounded-2xl p-3 text-left space-y-1.5 font-medium text-[11px] text-gray-700">
+                <div className="flex justify-between border-b pb-1">
+                  <span className="text-gray-400">Current Started Day:</span>
+                  <span className="font-black text-emerald-700">{activeDaySession.dateKey}</span>
                 </div>
-                <div className="space-y-2">
-                  <h2 className="text-2xl font-black text-gray-800 tracking-tight">Business Day Not Started</h2>
-                  <p className="text-xs font-semibold text-gray-500 leading-relaxed max-w-sm mx-auto">
-                    You need to start the business day before you can place orders, print tickets, or manage billing.
-                  </p>
+                <div className="flex justify-between border-b pb-1">
+                  <span className="text-gray-400">Started At:</span>
+                  <span className="font-bold">{new Date(activeDaySession.startedAt).toLocaleTimeString()}</span>
                 </div>
-                <div className="pt-2">
-                  <button
-                    onClick={triggerStartDayPrompt}
-                    className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white rounded-2xl font-black text-sm shadow-md hover:shadow-lg transition-all duration-150 flex items-center justify-center space-x-2 group cursor-pointer"
-                  >
-                    <span>🚀</span>
-                    <span>Start Business Day</span>
-                  </button>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Started By:</span>
+                  <span className="font-bold text-gray-900">{activeDaySession.startedBy}</span>
                 </div>
               </div>
+            ) : (
+              <div className="bg-red-50 border border-red-200 rounded-2xl p-3 text-red-700 font-bold text-center">
+                🔴 Day Status: CLOSED
+              </div>
+            )}
+
+            <div className="space-y-2 pt-1">
+              {activeDaySession ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => { setShowDayStatusModal(false); setCurrentScreen('DAY_END'); }}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl font-black transition text-xs shadow-md"
+                  >
+                    📊 Day End
+                  </button>
+                  <button
+                    onClick={() => setShowDayStatusModal(false)}
+                    className="bg-gray-800 hover:bg-black text-white py-3 rounded-xl font-black transition text-xs"
+                  >
+                    🔄 Continue Shift
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => { setShowDayStatusModal(false); triggerStartDayPrompt(); }}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3.5 rounded-xl font-black transition text-xs shadow-md"
+                >
+                  🚀 Open / Start New Day
+                </button>
+              )}
             </div>
-          )
-        )}
+          </div>
+        </div>
+      )}
 
-        {currentScreen === 'DAY_END' && (
-          <DayEndReport onBack={() => setCurrentScreen('BILLING')} onDayClosed={checkActiveSession} />
-        )}
+      {/* 📲 SCREEN RENDERING & DAY OPEN GATING */}
+      <main className="flex-1 overflow-hidden flex flex-col h-full">
+        {!activeDaySession && currentScreen !== 'DAY_END' ? (
+          <div className="flex-1 flex flex-col items-center justify-center bg-gray-100 p-6">
+            <div className="max-w-md w-full text-center space-y-6 bg-white p-8 rounded-3xl border border-gray-200 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-red-500 via-amber-500 to-emerald-500"></div>
+              <div className="inline-flex items-center justify-center w-24 h-24 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 text-5xl mb-2 shadow-inner">
+                🗓️
+              </div>
+              <div className="space-y-2">
+                <h2 className="text-2xl font-black text-gray-800 tracking-tight">Business Day Closed</h2>
+                <p className="text-xs font-semibold text-gray-500 leading-relaxed max-w-sm mx-auto">
+                  System Access Locked: You must open the business day before using Billing, Tables, or Admin Settings.
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  onClick={triggerStartDayPrompt}
+                  className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white rounded-2xl font-black text-sm shadow-lg hover:shadow-xl transition flex items-center justify-center space-x-2 cursor-pointer"
+                >
+                  <span>🚀</span>
+                  <span>Open / Start Business Day</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            {currentScreen === 'BILLING' && (
+              <POSFlow key={billingResetKey} currentUser={session} onLogout={handleLogout} activeDaySession={activeDaySession} />
+            )}
 
-        {currentScreen === 'DASHBOARD' && isAdmin && (
-          <DashboardScreen onBackToBilling={() => setCurrentScreen('BILLING')} />
-        )}
+            {currentScreen === 'DAY_END' && (
+              <DayEndReport onBack={() => setCurrentScreen('BILLING')} onDayClosed={checkActiveSession} />
+            )}
 
-        {currentScreen === 'ADMIN' && isAdmin && (
-          <ErrorBoundary>
-            <AdminPanel
-              onBackToBilling={() => setCurrentScreen('BILLING')}
-              onNavigate={(screen) => setCurrentScreen(screen)}
-              currentUser={session}
-              onLogout={handleLogout}
-            />
-          </ErrorBoundary>
+            {currentScreen === 'DASHBOARD' && isAdmin && (
+              <DashboardScreen onBackToBilling={() => setCurrentScreen('BILLING')} />
+            )}
+
+            {currentScreen === 'ADMIN' && isAdmin && (
+              <ErrorBoundary>
+                <AdminPanel
+                  onBackToBilling={() => setCurrentScreen('BILLING')}
+                  onNavigate={(screen) => setCurrentScreen(screen)}
+                  currentUser={session}
+                  onLogout={handleLogout}
+                />
+              </ErrorBoundary>
+            )}
+          </>
         )}
       </main>
     </div>

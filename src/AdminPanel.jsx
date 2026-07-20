@@ -10,6 +10,8 @@ import {
   generateBillReceipt,
   generateKitchenReceipt,
   printViaBluetooth,
+  generateBillReceiptHtml,
+  generateKitchenReceiptHtml,
   DEVELOPER_CREDIT_LINE_1,
   DEVELOPER_CREDIT_LINE_2
 } from './printUtils';
@@ -781,7 +783,8 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
         { name: 'Sample Item 2', sellingPrice: 450, quantity: 1 },
       ];
       const receipt = await generateBillReceipt(false, 'Test Table', 'TEST PRINT', 950, 95, 0, 1045, sampleItems, 999);
-      const success = await printViaBluetooth('bill', receipt);
+      const receiptHtml = generateBillReceiptHtml(false, 'Test Table', 'TEST PRINT', 950, 95, 0, 1045, sampleItems, 999);
+      const success = await printViaBluetooth('bill', receipt, receiptHtml);
       if (success) {
         Swal.fire({ icon: 'success', title: 'Test Print Sent! ✅', toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
       } else {
@@ -804,7 +807,8 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
         { quantity: 1, name: 'Iced Coffee' },
       ];
       const receipt = generateKitchenReceipt(false, 'Test Table', role === 'kot' ? 'KOT (KITCHEN)' : 'BOT (BAR)', sampleItems, 999);
-      const success = await printViaBluetooth(role, receipt);
+      const receiptHtml = generateKitchenReceiptHtml(false, 'Test Table', role === 'kot' ? 'KOT (KITCHEN)' : 'BOT (BAR)', sampleItems, 999);
+      const success = await printViaBluetooth(role, receipt, receiptHtml);
       if (success) {
         Swal.fire({ icon: 'success', title: `${role.toUpperCase()} Test Print Sent! ✅`, toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
       } else {
@@ -2613,6 +2617,27 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
               <div>
                 <h3 className="text-sm font-black text-gray-700 uppercase">🧾 Bill, KOT &amp; BOT Layout</h3>
                 <p className="text-[11px] text-gray-400">Customize everything that prints on the customer bill, kitchen ticket (KOT), and bar ticket (BOT).</p>
+              </div>
+
+              {/* Print Engine Selection */}
+              <div className="border border-indigo-200 bg-indigo-50/60 p-3.5 rounded-2xl space-y-2">
+                <h4 className="text-xs font-black text-indigo-900 uppercase">🖨️ Select Print Engine Mode</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className={`border-2 p-3 rounded-xl cursor-pointer flex flex-col justify-between transition ${billDesignForm.printEngine !== 'WINDOWS_DRIVER' ? 'border-indigo-600 bg-white shadow-sm' : 'border-gray-200 bg-gray-50 opacity-70'}`}>
+                    <div className="flex items-center space-x-2">
+                      <input type="radio" name="printEngine" value="THERMAL" checked={billDesignForm.printEngine !== 'WINDOWS_DRIVER'} onChange={() => handleBillDesignChange('printEngine', 'THERMAL')} className="text-indigo-600" />
+                      <span className="font-black text-xs text-gray-800">⚡ Direct Thermal (BT/USB)</span>
+                    </div>
+                    <span className="text-[10px] text-gray-500 mt-1">Sends raw ESC/POS commands directly to Bluetooth / WebUSB / Serial thermal printers.</span>
+                  </label>
+                  <label className={`border-2 p-3 rounded-xl cursor-pointer flex flex-col justify-between transition ${billDesignForm.printEngine === 'WINDOWS_DRIVER' ? 'border-indigo-600 bg-white shadow-sm' : 'border-gray-200 bg-gray-50 opacity-70'}`}>
+                    <div className="flex items-center space-x-2">
+                      <input type="radio" name="printEngine" value="WINDOWS_DRIVER" checked={billDesignForm.printEngine === 'WINDOWS_DRIVER'} onChange={() => handleBillDesignChange('printEngine', 'WINDOWS_DRIVER')} className="text-indigo-600" />
+                      <span className="font-black text-xs text-gray-800">🖨️ Windows Driver Mode</span>
+                    </div>
+                    <span className="text-[10px] text-gray-500 mt-1">Universal Mode: Prints via Windows Printer Driver (System Dialog / window.print()). Compatible with all PC printers!</span>
+                  </label>
+                </div>
               </div>
 
               {/* Store Info */}

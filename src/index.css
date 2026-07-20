@@ -1,1 +1,26 @@
 @import "tailwindcss";
+
+/* 🖨️ Thermal Receipt Print Stylesheet (Windows Driver Mode) */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  #pos-printable-receipt, #pos-printable-receipt * {
+    visibility: visible !important;
+  }
+  #pos-printable-receipt {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-family: monospace, sans-serif !important;
+  }
+  @page {
+    margin: 0 !important;
+    size: auto;
+  }
+}

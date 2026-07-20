@@ -5,7 +5,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import Swal from 'sweetalert2';
 import { getCurrentDaySession, closeDay } from './dayEndUtils';
 import { auditDb } from './auditUtils';
-import { printViaBluetooth, generateDayEndReceipt } from './printUtils';
+import { printViaBluetooth, generateDayEndReceipt, generateDayEndReceiptHtml } from './printUtils';
 
 export default function DayEndReport({ onBack, onDayClosed }) {
   const settledOrders = useLiveQuery(() => db.orders.where('status').equals('SETTLED').toArray()) || [];
@@ -145,7 +145,7 @@ export default function DayEndReport({ onBack, onDayClosed }) {
       const counted = sessionToPrint.cashCounted != null ? sessionToPrint.cashCounted : (cashCounted !== '' ? cashCountedNum : null);
       const variance = sessionToPrint.cashVariance != null ? sessionToPrint.cashVariance : (cashCounted !== '' ? (cashCountedNum - expected) : null);
 
-      const receipt = generateDayEndReceipt({
+      const reportObj = {
         daySession: sessionToPrint,
         totalNetSales, totalDiscounts, totalServiceCharge, totalItemsSold,
         totalOrders: todaysOrders.length,
@@ -156,8 +156,10 @@ export default function DayEndReport({ onBack, onDayClosed }) {
         deletedItemsCount: todaysDeletedItems.length,
         deletedBillsCount: todaysDeletedBills.length,
         isClosed: sessionToPrint.status === 'CLOSED',
-      });
-      const printed = await printViaBluetooth('bill', receipt);
+      };
+      const receipt = generateDayEndReceipt(reportObj);
+      const receiptHtml = generateDayEndReceiptHtml(reportObj);
+      const printed = await printViaBluetooth('bill', receipt, receiptHtml);
       if (!printed) {
         Swal.fire({ icon: 'error', title: 'Print Failed', text: `Found "${billDevice.name}" but could not print to it. Check it's powered on and in range, then try again.` });
         return false;

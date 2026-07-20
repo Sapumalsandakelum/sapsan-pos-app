@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import Swal from 'sweetalert2';
-import { printViaBluetooth, generateKitchenReceipt, generateBillReceipt, generateCancellationReceipt, getNextDailyOrderNumber } from './printUtils';
+import { printViaBluetooth, generateKitchenReceipt, generateBillReceipt, generateCancellationReceipt, getNextDailyOrderNumber, generateBillReceiptHtml, generateKitchenReceiptHtml } from './printUtils';
 import { logDeletedItem, logDeletedBill } from './auditUtils';
 
 // mainCategory: { id, name, icon, usesTables, serviceChargeEnabled }
@@ -355,11 +355,13 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
 
       if (kotItems.length > 0) {
         const kotReceipt = generateKitchenReceipt(isTakeawayLike, entityName, 'KOT (KITCHEN)', kotItems, orderNumber);
-        await printViaBluetooth('kot', kotReceipt);
+        const kotHtml = generateKitchenReceiptHtml(isTakeawayLike, entityName, 'KOT (KITCHEN)', kotItems, orderNumber);
+        await printViaBluetooth('kot', kotReceipt, kotHtml);
       }
       if (botItems.length > 0) {
         const botReceipt = generateKitchenReceipt(isTakeawayLike, entityName, 'BOT (BAR)', botItems, orderNumber);
-        await printViaBluetooth('bot', botReceipt);
+        const botHtml = generateKitchenReceiptHtml(isTakeawayLike, entityName, 'BOT (BAR)', botItems, orderNumber);
+        await printViaBluetooth('bot', botReceipt, botHtml);
       }
 
       let printerReceipts = '';
@@ -393,7 +395,8 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
 
     Swal.fire({ title: 'Printing Pre-Bill...', didOpen: () => Swal.showLoading(), allowOutsideClick: false, showConfirmButton: false });
     const preBillReceipt = await generateBillReceipt(isTakeawayLike, entityName, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart, existingOrder ? existingOrder.dailyOrderNumber : null);
-    const printed = await printViaBluetooth('bill', preBillReceipt);
+    const preBillHtml = generateBillReceiptHtml(isTakeawayLike, entityName, 'PRE-BILL RECEIPT', subTotal, totalServiceCharge, 0, netTotal, cart, existingOrder ? existingOrder.dailyOrderNumber : null);
+    const printed = await printViaBluetooth('bill', preBillReceipt, preBillHtml);
     Swal.close();
 
     if (printed) {
@@ -412,7 +415,8 @@ export default function BillingScreen({ mainCategory, entityName, onBack, curren
 
       Swal.fire({ title: 'Printing Final Invoice...', didOpen: () => Swal.showLoading(), allowOutsideClick: false, showConfirmButton: false });
       const finalReceipt = await generateBillReceipt(isTakeawayLike, entityName, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart, existingOrder.dailyOrderNumber);
-      const printed = await printViaBluetooth('bill', finalReceipt);
+      const finalHtml = generateBillReceiptHtml(isTakeawayLike, entityName, 'FINAL INVOICE', subTotal, totalServiceCharge, discountAmount, finalTotal, cart, existingOrder.dailyOrderNumber);
+      const printed = await printViaBluetooth('bill', finalReceipt, finalHtml);
       Swal.close();
 
       Swal.fire({

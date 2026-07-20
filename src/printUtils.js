@@ -316,27 +316,90 @@ const printViaSerialPort = async (deviceInfo, targetRole, receiptDataArray) => {
   }
 };
 
-// 🎯 ROUTER — the printer assigned to each role in Admin → Printer Settings IS the
-// "default printer" for that function (kot / bot / bill).
+// 🖥️ SYSTEM PRINTERS (Electron / OS Installed Printers)
+export const getSystemPrinters = async () => {
+  try {
+    if (window.require) {
+      const electron = window.require('electron');
+      if (electron && electron.ipcRenderer) {
+        const printers = await electron.ipcRenderer.invoke('get-system-printers');
+        return (printers || []).map(p => ({
+          id: `sys-${p.name}`,
+          name: `${p.displayName || p.name} ${p.isDefault ? '(OS Default)' : ''}`,
+          systemDeviceName: p.name,
+          type: 'SYSTEM',
+          isDefault: p.isDefault
+        }));
+      }
+    }
+  } catch (e) {
+    console.warn('System printers lookup skipped:', e);
+  }
+  return [];
+};
+
+export const printToSystemDefaultPrinter = async (targetRole) => {
+  try {
+    if (window.require) {
+      const electron = window.require('electron');
+      if (electron && electron.ipcRenderer) {
+        const res = await electron.ipcRenderer.invoke('print-to-system-printer', { silent: true });
+        if (res && res.success) return true;
+      }
+    }
+  } catch (e) {
+    console.warn('Silent system print fallback to window.print():', e);
+  }
+  window.print();
+  return true;
+};
+
+export const printToSpecificSystemPrinter = async (deviceName) => {
+  try {
+    if (window.require) {
+      const electron = window.require('electron');
+      if (electron && electron.ipcRenderer) {
+        const res = await electron.ipcRenderer.invoke('print-to-system-printer', { deviceName, silent: true });
+        if (res && res.success) return true;
+      }
+    }
+  } catch (e) {
+    console.warn('System print to device failed:', e);
+  }
+  window.print();
+  return true;
+};
+
+// 🎯 ROUTER — the printer assigned to each role in Admin → Printer Settings.
+// If unassigned or set to SYSTEM_DEFAULT, it automatically prints using the System Default Printer!
 export const printViaBluetooth = async (targetRole, receiptDataArray) => {
   const mappingSaved = localStorage.getItem('pos_printer_mapping');
   const devicesSaved = localStorage.getItem('pos_paired_bluetooth_devices');
-  if (!mappingSaved) return false;
 
-  const mapping = JSON.parse(mappingSaved);
-  const deviceId = mapping[targetRole];
-  if (!deviceId) {
-    console.log(`⚠️ No default printer assigned for role: ${targetRole.toUpperCase()}`);
-    return false;
+  let deviceId = '';
+  if (mappingSaved) {
+    try {
+      const mapping = JSON.parse(mappingSaved);
+      deviceId = mapping[targetRole] || '';
+    } catch (_) {}
+  }
+
+  // 💡 REQUIREMENT 1: If no printer assigned or set to SYSTEM_DEFAULT, automatically print via System Default Printer!
+  if (!deviceId || deviceId === 'SYSTEM_DEFAULT') {
+    console.log(`ℹ️ No custom thermal printer set for ${targetRole.toUpperCase()}. Automatically printing to System Default Printer.`);
+    return await printToSystemDefaultPrinter(targetRole);
   }
 
   const allDevices = devicesSaved ? JSON.parse(devicesSaved) : [];
   const device = allDevices.find(d => d.id === deviceId);
+
+  // If assigned printer isn't in devices list anymore, fall back automatically to System Default Printer
   if (!device) {
-    console.log(`⚠️ Device not found in paired list: ${deviceId}`);
-    return false;
+    console.log(`⚠️ Device ${deviceId} not found in saved list. Automatically printing to System Default Printer.`);
+    return await printToSystemDefaultPrinter(targetRole);
   }
 
+  if (device.type === 'SYSTEM') return await printToSpecificSystemPrinter(device.systemDeviceName || device.name);
   if (device.type === 'USB') return await printViaWebUSB(device, targetRole, receiptDataArray);
   if (device.type === 'SERIAL') return await printViaSerialPort(device, targetRole, receiptDataArray);
   return await printViaBluetoothDevice(device, targetRole, receiptDataArray); // BLUETOOTH

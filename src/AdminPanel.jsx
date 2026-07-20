@@ -10,6 +10,7 @@ import {
   generateBillReceipt,
   generateKitchenReceipt,
   printViaBluetooth,
+  getSystemPrinters,
   DEVELOPER_CREDIT_LINE_1,
   DEVELOPER_CREDIT_LINE_2
 } from './printUtils';
@@ -728,13 +729,38 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     setPrinterMapping(prev => ({ ...prev, [role]: deviceId, [`${role}_name`]: device ? device.name : '' }));
   };
 
+  const handleLoadSystemPrinters = async () => {
+    try {
+      const sysPrinters = await getSystemPrinters();
+      if (sysPrinters.length === 0) {
+        Swal.fire({
+          icon: 'info',
+          title: 'System Printers',
+          text: 'No custom OS printer list returned. System default printer fallback is active automatically!'
+        });
+        return;
+      }
+      sysPrinters.forEach(p => addDevice(p));
+      Swal.fire({
+        icon: 'success',
+        title: `Loaded ${sysPrinters.length} OS Printer(s)! ✅`,
+        toast: true, position: 'top-end', showConfirmButton: false, timer: 2000
+      });
+    } catch (err) {
+      console.error(err);
+      Swal.fire({ icon: 'error', title: 'Failed to Load OS Printers', text: err.message });
+    }
+  };
+
   const typeColor = (type) => {
+    if (type === 'SYSTEM') return 'bg-purple-100 text-purple-700';
     if (type === 'BLUETOOTH') return 'bg-blue-100 text-blue-700';
     if (type === 'USB') return 'bg-yellow-100 text-yellow-700';
     if (type === 'SERIAL') return 'bg-green-100 text-green-700';
     return 'bg-gray-100 text-gray-600';
   };
   const typeLabel = (type) => {
+    if (type === 'SYSTEM') return '🖥️ OS';
     if (type === 'BLUETOOTH') return '🔵 BT';
     if (type === 'USB') return '🟡 USB';
     if (type === 'SERIAL') return '🟢 COM';
@@ -2465,28 +2491,47 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
               {/* ── STEP 1: Add Printers ── */}
               <div>
                 <h3 className="text-xs font-black text-gray-400 uppercase mb-2">① Add Printers</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+
+                  <div className="border rounded-xl p-3 bg-purple-50 space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-lg">🖥️</span>
+                      <div>
+                        <div className="font-black text-xs text-purple-800">OS System Printers</div>
+                        <div className="text-[10px] text-purple-600">Windows / OS Printers</div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleLoadSystemPrinters}
+                      className="w-full bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-black py-2 rounded-lg transition"
+                    >
+                      🔍 Load OS Printers
+                    </button>
+                    <div className="text-[9px] text-purple-700 bg-purple-100 rounded-lg p-1.5 text-center">
+                      Detects all Windows-installed thermal &amp; A4 printers
+                    </div>
+                  </div>
 
                   <div className="border rounded-xl p-3 bg-blue-50 space-y-2">
                     <div className="flex items-center space-x-2">
                       <span className="text-lg">🔵</span>
                       <div>
                         <div className="font-black text-xs text-blue-800">Bluetooth Printer</div>
-                        <div className="text-[10px] text-blue-500">Mobile / Tablet for</div>
+                        <div className="text-[10px] text-blue-500">Mobile / Tablet</div>
                       </div>
                     </div>
                     <button
                       onClick={handleLoadPairedBluetooth}
                       className="w-full bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black py-2 rounded-lg transition"
                     >
-                      📋 Load Paired BT Devices
+                      📋 Load Paired BT
                     </button>
                     <button
                       onClick={handleScanBluetooth}
                       disabled={isScanning}
                       className="w-full bg-white border border-blue-300 hover:bg-blue-100 text-blue-700 text-[11px] font-black py-2 rounded-lg transition disabled:opacity-50"
                     >
-                      {isScanning ? '⏳ Scanning...' : '🔍 Scan New BT Device'}
+                      {isScanning ? '⏳ Scanning...' : '🔍 Scan BT Device'}
                     </button>
                   </div>
 
@@ -2495,25 +2540,22 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                       <span className="text-lg">🟡</span>
                       <div>
                         <div className="font-black text-xs text-yellow-800">USB Cable Printer</div>
-                        <div className="text-[10px] text-yellow-600">PC / Laptop (USB port)</div>
+                        <div className="text-[10px] text-yellow-600">PC USB Port</div>
                       </div>
                     </div>
                     <button
                       onClick={handleConnectUSB}
                       className="w-full bg-yellow-500 hover:bg-yellow-600 text-white text-[11px] font-black py-2 rounded-lg transition"
                     >
-                      🔌 Connect USB Printer
+                      🔌 Connect USB
                     </button>
                     <button
                       onClick={handleLoadPairedUSB}
                       disabled={isLoadingUSB}
                       className="w-full bg-white border border-yellow-400 hover:bg-yellow-100 text-yellow-700 text-[11px] font-black py-2 rounded-lg transition disabled:opacity-50"
                     >
-                      {isLoadingUSB ? '⏳ Refreshing...' : '🔄 Refresh USB Devices'}
+                      {isLoadingUSB ? '⏳ Refreshing...' : '🔄 Refresh USB'}
                     </button>
-                    <div className="text-[9px] text-yellow-700 bg-yellow-100 rounded-lg p-1.5 text-center">
-                      Chrome / Edge v61+ <br/>USB cable printer directly connect
-                    </div>
                   </div>
 
                   <div className="border rounded-xl p-3 bg-green-50 space-y-2">
@@ -2521,17 +2563,17 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                       <span className="text-lg">🟢</span>
                       <div>
                         <div className="font-black text-xs text-green-800">COM / Serial Printer</div>
-                        <div className="text-[10px] text-green-600">PC COM Port / RS232</div>
+                        <div className="text-[10px] text-green-600">PC COM Port</div>
                       </div>
                     </div>
                     <button
                       onClick={handleConnectSerial}
                       className="w-full bg-green-600 hover:bg-green-700 text-white text-[11px] font-black py-2 rounded-lg transition"
                     >
-                      🔗 Connect Serial Printer
+                      🔗 Connect Serial
                     </button>
                     <div className="text-[9px] text-green-700 bg-green-100 rounded-lg p-1.5 text-center">
-                      Chrome / Edge v89+ <br/>COM port printer / RS232 adapter
+                      COM Port / RS232
                     </div>
                   </div>
                 </div>
@@ -2564,7 +2606,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                 )}
               </div>
 
-              {/* ── STEP 3: Assign to Roles (this IS your default printer per function) ── */}
+              {/* ── STEP 3: Assign to Roles ── */}
               <div>
                 <h3 className="text-xs font-black text-gray-400 uppercase mb-2">③ Assign Default Printers (per function)</h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -2581,23 +2623,25 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                         onChange={(e) => handleMappingChange(role, e.target.value)}
                         className="w-full p-2 border rounded-lg bg-white text-xs font-bold"
                       >
-                        <option value="">— No Printer Assigned —</option>
+                        <option value="">🖥️ System Default Printer (Auto Fallback)</option>
                         {pairedDevices.map(d => (
                           <option key={d.id} value={d.id}>
                             {typeLabel(d.type)} {d.name}
                           </option>
                         ))}
                       </select>
-                      {printerMapping[role] && (
-                        <div className="text-[10px] text-gray-500 mt-1 font-bold">
-                          ✅ {pairedDevices.find(d => d.id === printerMapping[role])?.name || 'Assigned'}
-                        </div>
-                      )}
+                      <div className="text-[10px] text-gray-500 mt-1 font-bold">
+                        {printerMapping[role] ? (
+                          <>✅ {pairedDevices.find(d => d.id === printerMapping[role])?.name || 'Assigned'}</>
+                        ) : (
+                          <>🖥️ OS System Default Printer</>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
                 <p className="text-[10px] text-gray-400 mt-2">
-                  💡 The printer assigned to <b>BILL</b> here is used automatically for Pre-Bill and Final Invoice prints — this is your "default" bill printer. If it stops printing after being unplugged/out of range, tap "Load Paired BT Devices" above to refresh it.
+                  💡 If no thermal printer is selected for a role, the system <b>automatically prints to your computer's System Default Printer</b>!
                 </p>
               </div>
 

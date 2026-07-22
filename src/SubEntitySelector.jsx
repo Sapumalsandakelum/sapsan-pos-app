@@ -27,6 +27,14 @@ export default function SubEntitySelector({ mainCategory, currentUser, onSelectE
     saveSubEntities(mainCategory.id, entities);
   }, [entities, mainCategory.id]);
 
+  useEffect(() => {
+    // Auto-clean any empty pending orders with 0 items so tables never stay active without items
+    const emptyOrders = activeOrders.filter(o => !o.items || o.items.length === 0);
+    for (const emptyOrd of emptyOrders) {
+      db.orders.delete(emptyOrd.id);
+    }
+  }, [activeOrders]);
+
   const addEntity = () => {
     const numbers = entities.map(t => parseInt(t.replace(/\D/g, ''), 10)).filter(n => !isNaN(n));
     let next = 1;
@@ -69,9 +77,12 @@ export default function SubEntitySelector({ mainCategory, currentUser, onSelectE
 
       <div className="flex flex-wrap justify-center gap-3 max-w-4xl mx-auto">
         {entities.map((name) => {
-          const order = ordersForThisCategory.find(o => o.tableNumber === name);
-          const hasOrder = !!order;
-          const isOwnedByOthers = hasOrder && !isAdmin && order.cashierName !== currentUser?.username;
+          const activeSplitOrders = activeOrders.filter(o => o.parentTableNumber === name && o.status === 'PENDING');
+          const mainOrder = activeOrders.find(o => o.tableNumber === name && o.status === 'PENDING' && o.items && o.items.length > 0);
+
+          const hasOrder = !!mainOrder || activeSplitOrders.length > 0;
+          const order = mainOrder || activeSplitOrders[0];
+          const isOwnedByOthers = hasOrder && !isAdmin && order?.cashierName && order.cashierName !== currentUser?.username;
 
           return (
             <div
@@ -81,7 +92,7 @@ export default function SubEntitySelector({ mainCategory, currentUser, onSelectE
                   Swal.fire({
                     icon: 'warning',
                     title: 'Table Locked',
-                    text: `This table is managed by ${order.cashierName || 'another cashier'}.`,
+                    text: `This table is managed by ${order?.cashierName || 'another cashier'}.`,
                     toast: true,
                     position: 'top-end',
                     showConfirmButton: false,
@@ -105,9 +116,11 @@ export default function SubEntitySelector({ mainCategory, currentUser, onSelectE
                 <span className="absolute top-1.5 right-1.5 text-[8px] font-black bg-rose-800 text-white px-1.5 py-0.5 rounded">LOCKED</span>
               )}
               {hasOrder && !isOwnedByOthers && (
-                <span className="absolute top-1.5 right-1.5 text-[8px] font-black bg-white text-amber-600 px-1.5 py-0.5 rounded">ACTIVE</span>
+                <span className="absolute top-1.5 right-1.5 text-[8px] font-black bg-white text-amber-600 px-1.5 py-0.5 rounded">
+                  {activeSplitOrders.length > 0 ? `SPLIT (${activeSplitOrders.length})` : 'ACTIVE'}
+                </span>
               )}
-              {hasOrder && (
+              {hasOrder && order && (
                 <span className="absolute bottom-1.5 text-[8px] font-black text-white/90 bg-black/15 px-1.5 py-0.5 rounded uppercase truncate max-w-[92%]">
                   👤 {order.cashierName || 'Cashier'}
                 </span>

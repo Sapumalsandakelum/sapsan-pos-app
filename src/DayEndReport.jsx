@@ -4,8 +4,10 @@ import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import Swal from 'sweetalert2';
 import { getCurrentDaySession, closeDay } from './dayEndUtils';
-import { auditDb } from './auditUtils';
+import { auditDb, logActivity } from './auditUtils';
 import { printViaBluetooth, generateDayEndReceipt, generateDayEndReceiptHtml } from './printUtils';
+
+import QuickCalculatorModal from './QuickCalculatorModal';
 
 export default function DayEndReport({ onBack, onDayClosed }) {
   const settledOrders = useLiveQuery(() => db.orders.where('status').equals('SETTLED').toArray()) || [];
@@ -19,6 +21,8 @@ export default function DayEndReport({ onBack, onDayClosed }) {
   const [adminUsername, setAdminUsername] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [adminCheckLoading, setAdminCheckLoading] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
+  const [isCalcOpen, setIsCalcOpen] = useState(false);
 
   useEffect(() => {
     getCurrentDaySession().then(setDaySession);
@@ -51,10 +55,21 @@ export default function DayEndReport({ onBack, onDayClosed }) {
 
   todaysOrders.forEach(o => {
     totalNetSales += o.netTotal || 0;
-    totalDiscounts += o.discountAmount || 0;
+    const isComp = o.isComplementary || o.discountType === 'COMPLEMENTARY' || o.paymentMethod === 'COMPLEMENTARY';
+    if (!isComp) {
+      totalDiscounts += o.discountAmount || 0;
+    }
     totalServiceCharge += o.totalServiceCharge || 0;
     totalAdvanceRedeemed += o.advancePayment || 0;
-    if (paymentMap[o.paymentMethod] !== undefined) paymentMap[o.paymentMethod] += o.netTotal || 0;
+    if (o.paymentMethod === 'MULTI' && Array.isArray(o.paymentsBreakdown)) {
+      o.paymentsBreakdown.forEach(p => {
+        if (paymentMap[p.method] !== undefined) {
+          paymentMap[p.method] += parseFloat(p.amount) || 0;
+        }
+      });
+    } else if (paymentMap[o.paymentMethod] !== undefined) {
+      paymentMap[o.paymentMethod] += o.netTotal || 0;
+    }
     const cashierKey = o.cashierName || 'Admin Cashier';
     cashierMap[cashierKey] = (cashierMap[cashierKey] || 0) + (o.netTotal || 0);
     (o.items || []).forEach(item => {
@@ -64,6 +79,10 @@ export default function DayEndReport({ onBack, onDayClosed }) {
       productMap[item.name].revenue += item.sellingPrice * item.quantity;
     });
   });
+
+  const todaysComplementaryOrders = todaysOrders.filter(o => o.isComplementary || o.discountType === 'COMPLEMENTARY' || o.paymentMethod === 'COMPLEMENTARY');
+  const complementaryCount = todaysComplementaryOrders.length;
+  const complementaryAmountWaived = todaysComplementaryOrders.reduce((sum, o) => sum + (o.complementaryAmount || o.discountAmount || 0), 0);
 
   const totalGrossRevenue = totalNetSales + totalAdvanceRedeemed;
   const topProducts = Object.entries(productMap).map(([name, d]) => ({ name, ...d })).sort((a, b) => b.qty - a.qty).slice(0, 10);
@@ -104,6 +123,14 @@ export default function DayEndReport({ onBack, onDayClosed }) {
         setDaySession(updated);
         setIsClosing(false);
         
+        await logActivity({
+          actionType: 'DAY_END',
+          category: 'SESSION',
+          description: `Closed business day for ${daySession?.dateKey || 'today'} (Revenue: Rs.${totalGrossRevenue.toFixed(2)})`,
+          details: { totalGrossRevenue, cashExpected, cashCounted: cashCounted !== '' ? cashCountedNum : null },
+          performedBy: matchedAdmin.username
+        });
+
         // Auto print the Day End report using the thermal printer setup
         await performThermalPrint(updated);
 
@@ -120,29 +147,9 @@ export default function DayEndReport({ onBack, onDayClosed }) {
     }
   };
 
-  const [isPrinting, setIsPrinting] = useState(false);
-
   const performThermalPrint = async (sessionToPrint) => {
     if (!sessionToPrint) return false;
     try {
-      const mappingSaved = localStorage.getItem('pos_printer_mapping');
-      const devicesSaved = localStorage.getItem('pos_paired_bluetooth_devices');
-      const mapping = mappingSaved ? JSON.parse(mappingSaved) : {};
-      const billDeviceId = mapping.bill;
-      const allDevices = devicesSaved ? JSON.parse(devicesSaved) : [];
-      const billDevice = allDevices.find(d => d.id === billDeviceId);
-
-      console.log('🖨️ Day End print diagnostics:', { mapping, billDeviceId, pairedDeviceCount: allDevices.length, billDeviceFound: !!billDevice });
-
-      if (!billDeviceId) {
-        Swal.fire({ icon: 'warning', title: 'No Bill Printer Assigned (on this device)', text: 'Admin Panel → Printer Settings shows no printer saved for BILL in this app instance. If Bill printing works elsewhere, this may be a different install/browser profile with its own separate settings — re-assign it here too.' });
-        return false;
-      }
-      if (!billDevice) {
-        Swal.fire({ icon: 'warning', title: 'Bill Printer Not Found', text: `A printer was assigned to BILL, but it's no longer in the paired devices list. Go to Admin Panel → Printer Settings and re-pair it (tap "Load Paired BT Devices").` });
-        return false;
-      }
-
       const expected = paymentMap.CASH;
       const counted = sessionToPrint.cashCounted != null ? sessionToPrint.cashCounted : (cashCounted !== '' ? cashCountedNum : null);
       const variance = sessionToPrint.cashVariance != null ? sessionToPrint.cashVariance : (cashCounted !== '' ? (cashCountedNum - expected) : null);
@@ -155,21 +162,17 @@ export default function DayEndReport({ onBack, onDayClosed }) {
         cashExpected: expected,
         cashCounted: counted,
         cashVariance: variance,
+        complementaryCount,
+        complementaryAmountWaived,
         deletedItemsCount: todaysDeletedItems.length,
         deletedBillsCount: todaysDeletedBills.length,
         isClosed: sessionToPrint.status === 'CLOSED',
       };
       const receipt = generateDayEndReceipt(reportObj);
       const receiptHtml = generateDayEndReceiptHtml(reportObj);
-      const printed = await printViaBluetooth('bill', receipt, receiptHtml);
-      if (!printed) {
-        Swal.fire({ icon: 'error', title: 'Print Failed', text: `Found "${billDevice.name}" but could not print to it. Check it's powered on and in range, then try again.` });
-        return false;
-      }
-      return true;
+      return await printViaBluetooth('bill', receipt, receiptHtml);
     } catch (err) {
-      console.error(err);
-      Swal.fire({ icon: 'error', title: 'Print Failed', text: err.message });
+      console.error('Day End Print Failed:', err);
       return false;
     }
   };
@@ -193,6 +196,8 @@ export default function DayEndReport({ onBack, onDayClosed }) {
       ['Net Settled Cash/Card Revenue (Rs.)', totalNetSales.toFixed(2)],
       ['Service Charge Collected (Rs.)', totalServiceCharge.toFixed(2)],
       ['Discounts Given (Rs.)', totalDiscounts.toFixed(2)],
+      ['Complementary Bills Count', complementaryCount],
+      ['Complementary Amount Waived (Rs.)', complementaryAmountWaived.toFixed(2)],
       ['Cash Collected (Rs.)', paymentMap.CASH.toFixed(2)],
       ['Card Collected (Rs.)', paymentMap.CARD.toFixed(2)],
       ['Bank Transfer Collected (Rs.)', paymentMap.TRANSFER.toFixed(2)],
@@ -262,13 +267,49 @@ export default function DayEndReport({ onBack, onDayClosed }) {
           </div>
         </div>
 
-        {/* Payment Method Breakdown */}
-        <div className="bg-white rounded-2xl border p-4">
-          <h3 className="text-xs font-black text-gray-500 uppercase mb-3">💳 Payment Methods</h3>
-          <div className="grid grid-cols-3 gap-3 text-center">
-            <div><div className="text-[10px] text-gray-400 font-bold">💵 Cash</div><div className="font-black text-lg">Rs.{paymentMap.CASH.toFixed(2)}</div></div>
-            <div><div className="text-[10px] text-gray-400 font-bold">💳 Card</div><div className="font-black text-lg">Rs.{paymentMap.CARD.toFixed(2)}</div></div>
-            <div><div className="text-[10px] text-gray-400 font-bold">🏦 Transfer</div><div className="font-black text-lg">Rs.{paymentMap.TRANSFER.toFixed(2)}</div></div>
+        {/* Payment Methods */}
+        <div className="bg-gradient-to-r from-indigo-50/80 to-purple-50/80 rounded-2xl border border-indigo-100 p-5 shadow-xs">
+          <h3 className="text-sm font-black text-indigo-900 uppercase tracking-wide mb-3 flex items-center space-x-1.5">
+            <span>💳</span>
+            <span>Payment Methods Breakdown</span>
+          </h3>
+          <div className="grid grid-cols-3 gap-3 sm:gap-4 text-center">
+            <div className="bg-white p-3.5 rounded-2xl border border-indigo-100 shadow-xs">
+              <div className="text-xs font-black text-emerald-700 uppercase tracking-wider mb-1">💵 Cash</div>
+              <div className="font-black text-xl sm:text-2xl text-gray-900">Rs.{paymentMap.CASH.toFixed(2)}</div>
+            </div>
+            <div className="bg-white p-3.5 rounded-2xl border border-indigo-100 shadow-xs">
+              <div className="text-xs font-black text-blue-700 uppercase tracking-wider mb-1">💳 Card</div>
+              <div className="font-black text-xl sm:text-2xl text-gray-900">Rs.{paymentMap.CARD.toFixed(2)}</div>
+            </div>
+            <div className="bg-white p-3.5 rounded-2xl border border-indigo-100 shadow-xs">
+              <div className="text-xs font-black text-purple-700 uppercase tracking-wider mb-1">🏦 Transfer</div>
+              <div className="font-black text-xl sm:text-2xl text-gray-900">Rs.{paymentMap.TRANSFER.toFixed(2)}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Complementary Bills Summary */}
+        <div className="bg-purple-50 rounded-2xl border border-purple-200 p-4">
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-xs font-black text-purple-900 uppercase flex items-center space-x-1.5">
+              <span>🎁</span>
+              <span>Complementary Bills Waived</span>
+            </h3>
+            <span className="text-[10px] bg-purple-200 text-purple-900 px-2 py-0.5 rounded-full font-black">
+              {complementaryCount} Bill(s)
+            </span>
+          </div>
+          <div className="flex justify-between items-center bg-white p-3 rounded-xl border border-purple-100">
+            <div>
+              <div className="text-[10px] text-gray-400 font-bold uppercase">Total Value Waived</div>
+              <div className="font-black text-lg text-purple-700">Rs.{complementaryAmountWaived.toFixed(2)}</div>
+            </div>
+            {todaysComplementaryOrders.length > 0 && (
+              <div className="text-[11px] text-purple-900 font-bold max-w-xs text-right">
+                Latest: "{todaysComplementaryOrders[todaysComplementaryOrders.length - 1].complementaryReason || 'Waived'}" ({todaysComplementaryOrders[todaysComplementaryOrders.length - 1].authorizedAdmin ? `by ${todaysComplementaryOrders[todaysComplementaryOrders.length - 1].authorizedAdmin}` : 'Admin'})
+              </div>
+            )}
           </div>
         </div>
 

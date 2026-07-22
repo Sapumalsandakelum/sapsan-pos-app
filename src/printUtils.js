@@ -507,7 +507,7 @@ export const generateCancellationReceipt = (isTakeaway, tableName, item, orderNu
 // Bill / Pre-Bill / Final Invoice — fully customizable via Bill Design settings.
 // orderNumber is the daily-resetting sequential number (from getNextDailyOrderNumber()),
 // printed big & bold near the top; omit/null to hide it even if showOrderNumber is on.
-export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, orderNumber, advancePaid = 0) => {
+export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, orderNumber, advancePaid = 0, paymentsBreakdown = null, splitInfo = null) => {
   const settings = getBillDesignSettings();
   const { rasterPx, charsPerLine } = PAPER_WIDTH_CONFIG[settings.paperWidth] || PAPER_WIDTH_CONFIG['80mm'];
 
@@ -562,6 +562,13 @@ export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub,
 
   data.push(textToBytes(`--- ${billTitle} ---`));
   heightMm += bodyLineMm;
+
+  if (splitInfo) {
+    data.push(ESC_FONT_BOLD);
+    data.push(textToBytes(`[ ${splitInfo} ]`));
+    heightMm += bodyLineMm;
+    data.push(ESC_FONT_NORMAL);
+  }
 
   // Order Number — always printed HUGE & bold, right at the top of the bill
   if (settings.showOrderNumber && orderNumber !== undefined && orderNumber !== null) {
@@ -629,6 +636,22 @@ export const generateBillReceipt = async (isTakeaway, tableName, billTitle, sub,
   data.push(bodySize);
   data.push(ESC_FONT_NORMAL);
 
+  if (paymentsBreakdown && Array.isArray(paymentsBreakdown) && paymentsBreakdown.length > 0) {
+    data.push(ESC_ALIGN_LEFT);
+    data.push(textToBytes('Payment Breakdown:'));
+    heightMm += bodyLineMm;
+    paymentsBreakdown.forEach(p => {
+      data.push(ESC_ALIGN_RIGHT);
+      data.push(textToBytes(`${p.method}: Rs.${parseFloat(p.amount).toFixed(2)}`));
+      heightMm += bodyLineMm;
+      if (p.cashReceived != null && p.cashReceived > 0) {
+        data.push(textToBytes(`Cash Paid: Rs.${parseFloat(p.cashReceived).toFixed(2)}`));
+        data.push(textToBytes(`Change: Rs.${parseFloat(p.changeAmount || 0).toFixed(2)}`));
+        heightMm += bodyLineMm * 2;
+      }
+    });
+  }
+
   data.push(ESC_ALIGN_CENTER);
   data.push(textToBytes(settings.footerMessage || 'Thank You! Come Again.'));
   heightMm += bodyLineMm;
@@ -658,6 +681,7 @@ export const generateDayEndReceipt = (reportData) => {
     daySession, totalNetSales, totalDiscounts, totalServiceCharge, totalItemsSold,
     totalOrders, paymentMap, cashierList, topProducts,
     cashExpected, cashCounted, cashVariance,
+    complementaryCount = 0, complementaryAmountWaived = 0,
     deletedItemsCount, deletedBillsCount, isClosed,
   } = reportData;
 
@@ -700,15 +724,23 @@ export const generateDayEndReceipt = (reportData) => {
   data.push(ESC_FONT_NORMAL);
   data.push(textToBytes(`Service Charge: Rs.${totalServiceCharge.toFixed(2)}`));
   data.push(textToBytes(`Discounts: Rs.${totalDiscounts.toFixed(2)}`));
+  if (complementaryCount > 0 || complementaryAmountWaived > 0) {
+    data.push(ESC_FONT_BOLD);
+    data.push(textToBytes(`COMPLEMENTARY: ${complementaryCount} Bill(s)`));
+    data.push(textToBytes(`Waived Value:  Rs.${complementaryAmountWaived.toFixed(2)}`));
+    data.push(ESC_FONT_NORMAL);
+  }
   data.push(textToBytes(sep));
 
-  // Payment breakdown
+  // Payment breakdown (printed LARGE & BOLD)
   data.push(ESC_FONT_BOLD);
+  data.push(ESC_SIZE_LARGE);
   data.push(textToBytes('PAYMENT METHODS'));
-  data.push(ESC_FONT_NORMAL);
   data.push(textToBytes(`Cash:     Rs.${paymentMap.CASH.toFixed(2)}`));
   data.push(textToBytes(`Card:     Rs.${paymentMap.CARD.toFixed(2)}`));
   data.push(textToBytes(`Transfer: Rs.${paymentMap.TRANSFER.toFixed(2)}`));
+  data.push(ESC_SIZE_NORMAL);
+  data.push(ESC_FONT_NORMAL);
   data.push(textToBytes(sep));
 
   // Cash reconciliation
@@ -776,7 +808,7 @@ export const generateDayEndReceipt = (reportData) => {
 // ==========================================
 // 🌐 HTML RECEIPT GENERATORS MATCHING BILL DESIGN TAB PREVIEW
 // ==========================================
-export const generateBillReceiptHtml = (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, orderNumber, advancePaid = 0) => {
+export const generateBillReceiptHtml = (isTakeaway, tableName, billTitle, sub, sc, disc, net, itemsList, orderNumber, advancePaid = 0, paymentsBreakdown = null, splitInfo = null) => {
   const settings = getBillDesignSettings();
   const widthPx = settings.paperWidth === '58mm' ? '230px' : '300px';
 
@@ -811,6 +843,10 @@ export const generateBillReceiptHtml = (isTakeaway, tableName, billTitle, sub, s
 
   html += `<div style="text-align: center; font-size: 10px; font-weight: bold; margin: 4px 0;">--- ${billTitle} ---</div>`;
 
+  if (splitInfo) {
+    html += `<div style="text-align: center; font-size: 10px; font-weight: 900; margin: 2px 0;">[ ${splitInfo} ]</div>`;
+  }
+
   if (settings.showOrderNumber && orderNumber !== undefined && orderNumber !== null) {
     html += `<div style="text-align: center; font-weight: 900; font-size: ${previewSizePx('HUGE')}; margin: 4px 0;">Order #${orderNumber}</div>`;
   }
@@ -839,6 +875,20 @@ export const generateBillReceiptHtml = (isTakeaway, tableName, billTitle, sub, s
     html += `<div style="display: flex; justify-content: space-between;"><span>Discount:</span><span>-Rs.${disc.toFixed(2)}</span></div>`;
   }
   html += `<div style="display: flex; justify-content: space-between; font-weight: 900; border-top: 1px dashed #9ca3af; padding-top: 4px; margin-top: 4px; font-size: ${netTotalFont};"><span>NET TOTAL:</span><span>Rs.${net.toFixed(2)}</span></div>`;
+
+  if (paymentsBreakdown && Array.isArray(paymentsBreakdown) && paymentsBreakdown.length > 0) {
+    html += `<div style="border-top: 1px dashed #9ca3af; margin-top: 4px; padding-top: 4px; font-size: 10px;">`;
+    html += `<div style="font-weight: bold; margin-bottom: 2px;">Payment Breakdown:</div>`;
+    paymentsBreakdown.forEach(p => {
+      html += `<div style="display: flex; justify-content: space-between;"><span>${p.method}</span><span>Rs.${parseFloat(p.amount).toFixed(2)}</span></div>`;
+      if (p.cashReceived != null && p.cashReceived > 0) {
+        html += `<div style="display: flex; justify-content: space-between; color: #4b5563;"><span>Cash Received:</span><span>Rs.${parseFloat(p.cashReceived).toFixed(2)}</span></div>`;
+        html += `<div style="display: flex; justify-content: space-between; font-weight: bold; color: #047857;"><span>Change Returned:</span><span>Rs.${parseFloat(p.changeAmount || 0).toFixed(2)}</span></div>`;
+      }
+    });
+    html += `</div>`;
+  }
+
   html += `</div>`;
 
   html += `<div style="text-align: center; font-size: 10px; margin-top: 8px;">${settings.footerMessage || 'Thank You! Come Again.'}</div>`;
@@ -893,6 +943,7 @@ export const generateDayEndReceiptHtml = (reportData) => {
   const {
     daySession, totalNetSales, totalDiscounts, totalServiceCharge, totalItemsSold,
     totalOrders, paymentMap, isClosed,
+    complementaryCount = 0, complementaryAmountWaived = 0,
   } = reportData;
 
   const settings = getBillDesignSettings();
@@ -919,13 +970,16 @@ export const generateDayEndReceiptHtml = (reportData) => {
   html += `<div style="font-weight: bold;">Items Sold: ${totalItemsSold}</div>`;
   html += `<div>Service Charge: Rs.${totalServiceCharge.toFixed(2)}</div>`;
   html += `<div>Discounts: Rs.${totalDiscounts.toFixed(2)}</div>`;
+  if (complementaryCount > 0 || complementaryAmountWaived > 0) {
+    html += `<div style="font-weight: bold; color: #6b21a8; margin-top: 2px;">Complementary: ${complementaryCount} Bill(s) (Rs.${complementaryAmountWaived.toFixed(2)})</div>`;
+  }
   html += `</div>`;
 
-  html += `<div style="border-top: 1px dashed #9ca3af; padding: 4px 0; font-size: 10px;">`;
-  html += `<div style="font-weight: bold;">PAYMENT METHODS</div>`;
-  html += `<div>Cash: Rs.${paymentMap.CASH.toFixed(2)}</div>`;
-  html += `<div>Card: Rs.${paymentMap.CARD.toFixed(2)}</div>`;
-  html += `<div>Transfer: Rs.${paymentMap.TRANSFER.toFixed(2)}</div>`;
+  html += `<div style="border-top: 1px dashed #9ca3af; border-bottom: 1px dashed #9ca3af; padding: 6px 0; margin: 4px 0; font-size: 12px;">`;
+  html += `<div style="font-weight: 900; font-size: 13px; margin-bottom: 4px; color: #111827;">PAYMENT METHODS</div>`;
+  html += `<div style="display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 2px;"><span>Cash:</span><span>Rs.${paymentMap.CASH.toFixed(2)}</span></div>`;
+  html += `<div style="display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 2px;"><span>Card:</span><span>Rs.${paymentMap.CARD.toFixed(2)}</span></div>`;
+  html += `<div style="display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 2px;"><span>Transfer:</span><span>Rs.${paymentMap.TRANSFER.toFixed(2)}</span></div>`;
   html += `</div>`;
 
   html += `<div style="text-align: center; font-weight: 900; font-size: 15px; border-top: 1px dashed #9ca3af; border-bottom: 1px dashed #9ca3af; padding: 4px 0; margin-top: 6px;">NET SALES: Rs.${totalNetSales.toFixed(2)}</div>`;

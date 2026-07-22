@@ -83,7 +83,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     });
   };
 
-  // 👈 db.js එකේ ඇති db.admins ව්‍යුහය සෘජුවම ලබා ගැනීම
+  // Retrieve db.admins structure directly from db.js
   const admins = useLiveQuery(() => db.admins.toArray()) || [];
 
   // Navigation state inside admin
@@ -98,6 +98,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
       label: '📊 Sales Overview',
       reports: [
         { key: 'SUMMARY', label: 'Sales Summary', icon: '📋' },
+        { key: 'MONTHLY_HIERARCHY', label: 'Monthly Breakdown (Main > Sub > Items)', icon: '📅' },
         { key: 'PAYMENT_METHOD', label: 'Payment Methods', icon: '💳' },
       ],
     },
@@ -159,6 +160,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   const [datePreset, setDatePreset] = useState('TODAY');
   const [startDate, setStartDate] = useState(() => getLocalDateString());
   const [endDate, setEndDate] = useState(() => getLocalDateString());
+  const [selectedMainCategoryFilter, setSelectedMainCategoryFilter] = useState('ALL');
   const [selectedItemFilter, setSelectedItemFilter] = useState('ALL');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('ALL');
   const [selectedPaymentFilter, setSelectedPaymentFilter] = useState('ALL');
@@ -258,10 +260,12 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
       if (!order.settledDate) return false;
       const orderDate = new Date(order.settledDate);
       if (isNaN(orderDate.getTime())) return false;
-      if (!order.items || !Array.isArray(order.items)) return false;
+      if (!order.items || !Array.isArray(order.items) || order.items.length === 0) return false;
 
       if (rangeStart && rangeStart > orderDate) return false;
       if (rangeEnd && rangeEnd < orderDate) return false;
+
+      if (selectedMainCategoryFilter !== 'ALL' && (order.mainCategoryName || 'General Sales') !== selectedMainCategoryFilter) return false;
 
       if (selectedItemFilter !== 'ALL') {
         const hasItem = order.items.some(i => i.name === selectedItemFilter);
@@ -284,8 +288,9 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
   const filteredOrders = getProcessedReports();
 
-  const anyFilterActive = selectedItemFilter !== 'ALL' || selectedCategoryFilter !== 'ALL' || selectedPaymentFilter !== 'ALL' || selectedCashierFilter !== 'ALL' || selectedTableFilter !== 'ALL' || reportSearchTerm.trim() !== '';
+  const anyFilterActive = selectedMainCategoryFilter !== 'ALL' || selectedItemFilter !== 'ALL' || selectedCategoryFilter !== 'ALL' || selectedPaymentFilter !== 'ALL' || selectedCashierFilter !== 'ALL' || selectedTableFilter !== 'ALL' || reportSearchTerm.trim() !== '';
   const clearAllFilters = () => {
+    setSelectedMainCategoryFilter('ALL');
     setSelectedItemFilter('ALL');
     setSelectedCategoryFilter('ALL');
     setSelectedPaymentFilter('ALL');
@@ -448,6 +453,71 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   );
 
   // ==========================================
+  // 📅 MONTHLY HIERARCHY MAP (Main Cat -> Sub Cat -> Items)
+  // ==========================================
+  const monthlyHierarchyMap = {};
+  filteredOrders.forEach(order => {
+    const mcName = order.mainCategoryName || 'General Sales';
+    if (!monthlyHierarchyMap[mcName]) {
+      monthlyHierarchyMap[mcName] = {
+        name: mcName,
+        totalRevenue: 0,
+        totalQty: 0,
+        subCategories: {}
+      };
+    }
+    (order.items || []).forEach(item => {
+      const lineTotal = (item.sellingPrice || 0) * (item.quantity || 0);
+      const itemDbInfo = items.find(i => i.name === item.name);
+      const catInfo = itemDbInfo ? categories.find(c => c.id === itemDbInfo.categoryId) : null;
+      const subCatName = catInfo ? catInfo.name : 'Uncategorized';
+      const unitCost = itemDbInfo && itemDbInfo.costPrice ? itemDbInfo.costPrice : ((item.sellingPrice || 0) * 0.6);
+      const lineCost = unitCost * (item.quantity || 0);
+
+      monthlyHierarchyMap[mcName].totalRevenue += lineTotal;
+      monthlyHierarchyMap[mcName].totalQty += item.quantity || 0;
+
+      if (!monthlyHierarchyMap[mcName].subCategories[subCatName]) {
+        monthlyHierarchyMap[mcName].subCategories[subCatName] = {
+          name: subCatName,
+          totalRevenue: 0,
+          totalQty: 0,
+          items: {}
+        };
+      }
+
+      monthlyHierarchyMap[mcName].subCategories[subCatName].totalRevenue += lineTotal;
+      monthlyHierarchyMap[mcName].subCategories[subCatName].totalQty += item.quantity || 0;
+
+      if (!monthlyHierarchyMap[mcName].subCategories[subCatName].items[item.name]) {
+        monthlyHierarchyMap[mcName].subCategories[subCatName].items[item.name] = {
+          name: item.name,
+          sellingPrice: item.sellingPrice || 0,
+          costPrice: unitCost,
+          qty: 0,
+          revenue: 0,
+          cost: 0,
+          profit: 0
+        };
+      }
+
+      const itemObj = monthlyHierarchyMap[mcName].subCategories[subCatName].items[item.name];
+      itemObj.qty += item.quantity || 0;
+      itemObj.revenue += lineTotal;
+      itemObj.cost += lineCost;
+      itemObj.profit += (lineTotal - lineCost);
+    });
+  });
+
+  const monthlyHierarchyList = Object.values(monthlyHierarchyMap).map(mc => ({
+    ...mc,
+    subCategories: Object.values(mc.subCategories).map(sc => ({
+      ...sc,
+      items: Object.values(sc.items).sort((a, b) => b.revenue - a.revenue)
+    })).sort((a, b) => b.totalRevenue - a.totalRevenue)
+  })).sort((a, b) => b.totalRevenue - a.totalRevenue);
+
+  // ==========================================
   // 🗑️ DELETED ITEMS / DELETED BILLS — filtered with the same date range,
   // cashier, table, and item filters as everything else above
   // ==========================================
@@ -532,6 +602,16 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
         (o.discountAmount || 0).toFixed(2),
         (o.netTotal || 0).toFixed(2),
       ]);
+    } else if (reportType === 'MONTHLY_HIERARCHY') {
+      headers = ['Main Category', 'Sub Category', 'Item Name', 'Unit Price (Rs.)', 'Qty Sold', 'Total Revenue (Rs.)', 'Gross Profit (Rs.)'];
+      rows = [];
+      monthlyHierarchyList.forEach(mc => {
+        mc.subCategories.forEach(sc => {
+          sc.items.forEach(it => {
+            rows.push([mc.name, sc.name, it.name, (it.sellingPrice || 0).toFixed(2), it.qty, it.revenue.toFixed(2), it.profit.toFixed(2)]);
+          });
+        });
+      });
     } else if (reportType === 'PRODUCT') {
       headers = ['Item Name', 'Qty Sold', 'Revenue (Rs.)', '% of Total Sales'];
       rows = productSalesList.map(p => [p.name, p.qty, p.revenue.toFixed(2), totalNetSales > 0 ? ((p.revenue / totalNetSales) * 100).toFixed(1) : '0.0']);
@@ -604,6 +684,23 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
           </tr>`;
         });
         bodyHtml += `</tbody></table>`;
+      } else if (reportType === 'MONTHLY_HIERARCHY') {
+        bodyHtml += `<div style="font-size:10px; margin-bottom:6px;"><b>Total Monthly Sales: Rs.${totalNetSales.toFixed(2)}</b></div>`;
+        monthlyHierarchyList.forEach(mc => {
+          bodyHtml += `<div style="font-size:10px; font-weight:bold; background:#eee; padding:2px 4px; margin-top:6px;">${mc.name} (Rs.${mc.totalRevenue.toFixed(0)})</div>`;
+          mc.subCategories.forEach(sc => {
+            bodyHtml += `<div style="font-size:9px; font-weight:bold; margin-top:3px; color:#444;">-- ${sc.name} (Rs.${sc.totalRevenue.toFixed(0)})</div>`;
+            bodyHtml += `<table style="width:100%; font-size:8px; border-collapse:collapse; text-align:left; margin-bottom:4px;">
+              <thead>
+                <tr style="border-bottom:1px solid #ccc;"><th>Item</th><th>Qty</th><th style="text-align:right;">Rev</th></tr>
+              </thead>
+              <tbody>`;
+            sc.items.forEach(it => {
+              bodyHtml += `<tr><td>${it.name}</td><td>${it.qty}</td><td style="text-align:right;">Rs.${it.revenue.toFixed(0)}</td></tr>`;
+            });
+            bodyHtml += `</tbody></table>`;
+          });
+        });
       } else if (reportType === 'PRODUCT' || reportType === 'PROFIT') {
         bodyHtml += `<table style="width:100%; font-size:9px; border-collapse:collapse; text-align:left;">
           <thead>
@@ -784,7 +881,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
   const handleLoadPairedBluetooth = async () => {
     if (!navigator.bluetooth) {
-      Swal.fire({ icon: 'error', title: 'Bluetooth Supported නැත!', text: 'Chrome හෝ Edge browser use කරන්න.' });
+      Swal.fire({ icon: 'error', title: 'Bluetooth Not Supported!', text: 'Please use Chrome or Edge browser.' });
       return;
     }
     try {
@@ -1151,16 +1248,34 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   const [mainCatIcon, setMainCatIcon] = useState('🍽️');
   const [mainCatUsesTables, setMainCatUsesTables] = useState(true);
   const [mainCatServiceCharge, setMainCatServiceCharge] = useState(true);
+  const [mainCatAllowedActions, setMainCatAllowedActions] = useState({
+    ADVANCE: true,
+    PRE_BILL: true,
+    SPLIT_BILL: true,
+    SETTLE: true,
+    CLEAR_BILL: true
+  });
   const [editingMainCatId, setEditingMainCatId] = useState(null);
 
   const resetMainCatForm = () => {
-    setMainCatName(''); setMainCatIcon('🍽️'); setMainCatUsesTables(true); setMainCatServiceCharge(true); setEditingMainCatId(null);
+    setMainCatName(''); setMainCatIcon('🍽️'); setMainCatUsesTables(true); setMainCatServiceCharge(true);
+    setMainCatAllowedActions({ ADVANCE: true, PRE_BILL: true, SPLIT_BILL: true, SETTLE: true, CLEAR_BILL: true });
+    setEditingMainCatId(null);
   };
 
   const handleSaveMainCategory = async (e) => {
     e.preventDefault();
     if (!mainCatName.trim()) return;
-    const data = { name: mainCatName.trim(), icon: mainCatIcon.trim() || '📋', usesTables: mainCatUsesTables, serviceChargeEnabled: mainCatServiceCharge };
+    const data = {
+      name: mainCatName.trim(),
+      icon: mainCatIcon.trim() || '📋',
+      usesTables: mainCatUsesTables,
+      serviceChargeEnabled: mainCatServiceCharge,
+      allowedActions: {
+        SAVE_KOT: true,
+        ...mainCatAllowedActions
+      }
+    };
     if (editingMainCatId) await updateMainCategory(editingMainCatId, data);
     else await addMainCategory(data);
     resetMainCatForm();
@@ -1171,6 +1286,12 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
     const result = await Swal.fire({ title: 'Are you sure?', text: "Delete this main category? Its table/order list will be lost too.", icon: 'warning', showCancelButton: true, confirmButtonColor: '#ef4444', confirmButtonText: 'Yes' });
     if (result.isConfirmed) await deleteMainCategory(id);
   };
+
+  // ==========================================
+  // 🍽️ MENU CUSTOMIZATION STATE
+  // ==========================================
+  const [menuSelectedMainCat, setMenuSelectedMainCat] = useState(null);
+  const [menuReportView, setMenuReportView] = useState(false);
 
   const [catName, setCatName] = useState('');
   const [printerType, setPrinterType] = useState('KOT');
@@ -1199,22 +1320,31 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   const [serviceCharge, setServiceCharge] = useState('10');
   const [isStockManaged, setIsStockManaged] = useState(false);
   const [stockLevel, setStockLevel] = useState('');
+  const [isInclusiveServiceCharge, setIsInclusiveServiceCharge] = useState(false);
   const [editingItemId, setEditingItemId] = useState(null);
 
   const handleSaveItem = async (e) => {
     e.preventDefault(); if (!itemName.trim() || !itemPrice || !itemCategory) return;
+    const scPct = parseFloat(serviceCharge) || 0;
+    const rawPrice = parseFloat(itemPrice) || 0;
+    const basePrice = (isInclusiveServiceCharge && scPct > 0)
+      ? (rawPrice / (1 + (scPct / 100)))
+      : rawPrice;
+
     const data = {
       name: itemName,
       costPrice: parseFloat(itemCostPrice) || 0,
-      sellingPrice: parseFloat(itemPrice),
+      sellingPrice: basePrice,
+      inclusivePrice: isInclusiveServiceCharge ? rawPrice : null,
+      isInclusiveServiceCharge: !!isInclusiveServiceCharge,
       categoryId: parseInt(itemCategory),
-      serviceChargePercentage: parseFloat(serviceCharge) || 0,
+      serviceChargePercentage: scPct,
       isStockManaged: !!isStockManaged,
       stockLevel: isStockManaged ? (parseInt(stockLevel) || 0) : 0
     };
     if (editingItemId) await db.items.update(editingItemId, data);
     else await db.items.add(data);
-    setItemName(''); setItemCostPrice(''); setItemPrice(''); setItemCategory(''); setServiceCharge('10'); setIsStockManaged(false); setStockLevel(''); setEditingItemId(null);
+    setItemName(''); setItemCostPrice(''); setItemPrice(''); setItemCategory(''); setServiceCharge('10'); setIsStockManaged(false); setStockLevel(''); setIsInclusiveServiceCharge(false); setEditingItemId(null);
     Swal.fire({ icon: 'success', title: 'Saved!', toast: true, position: 'top-end', showConfirmButton: false, timer: 1500 });
   };
 
@@ -1590,7 +1720,7 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-57px)] w-full bg-gray-100 p-4 overflow-hidden text-gray-800">
+    <div className="flex flex-col h-[calc(100vh-57px)] w-full bg-gray-100 p-3 sm:p-4 overflow-y-auto text-gray-800">
 
       {/* Top Header */}
       <div className="flex justify-between items-center bg-white p-4 rounded-2xl border shadow-sm mb-4 shrink-0">
@@ -1617,8 +1747,9 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
       </div>
 
       {/* Tab Bar Navigation */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-9 gap-1.5 border-b pb-3 mb-4 shrink-0">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-10 gap-1.5 border-b pb-3 mb-4 shrink-0">
         <button onClick={() => setActiveSubTab('MAIN_CATEGORIES')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'MAIN_CATEGORIES' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>🗂️ Main Categories</button>
+        <button onClick={() => setActiveSubTab('MENU_CUSTOMIZATION')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'MENU_CUSTOMIZATION' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>🍽️ Menu Customization</button>
         <button onClick={() => setActiveSubTab('CATEGORIES')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'CATEGORIES' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>📂 Manage Categories</button>
         <button onClick={() => setActiveSubTab('ITEMS')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'ITEMS' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>🍔 Manage Food Items</button>
         <button onClick={() => setActiveSubTab('REPORTS')} className={`px-2 py-2.5 rounded-xl font-black text-[10px] sm:text-xs flex items-center justify-center gap-1.5 transition active:scale-95 border ${activeSubTab === 'REPORTS' ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>📊 Premium Reports</button>
@@ -1630,12 +1761,12 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
       </div>
 
       {/* Main Container Workspaces */}
-      <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-12 gap-4">
+      <div className="flex-1 min-h-0 overflow-y-auto grid grid-cols-1 md:grid-cols-12 gap-4 pb-4">
 
         {/* MAIN CATEGORIES WORKSPACE */}
         {activeSubTab === 'MAIN_CATEGORIES' && (
           <>
-            <div className="md:col-span-4 bg-white p-4 rounded-2xl border h-full flex flex-col justify-between">
+            <div className="md:col-span-4 bg-white p-4 rounded-2xl border h-full flex flex-col justify-between overflow-y-auto">
               <form onSubmit={handleSaveMainCategory} className="space-y-4">
                 <div>
                   <h3 className="text-sm font-black text-gray-700 uppercase">{editingMainCatId ? '📝 Edit Main Category' : '➕ Add Main Category'}</h3>
@@ -1663,6 +1794,98 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                   <input type="checkbox" checked={mainCatServiceCharge} onChange={(e) => setMainCatServiceCharge(e.target.checked)} />
                   <span>Apply Service Charge to orders in this category</span>
                 </label>
+
+                {/* 💳 BILL SETTLEMENT SELECT OPTIONS */}
+                <div className="border rounded-xl p-3 bg-gray-50/80 space-y-2">
+                  <div className="text-xs font-black text-gray-700 uppercase tracking-wide">
+                    ⚡ Bill Settlement Options
+                  </div>
+                  <p className="text-[10px] text-gray-400">
+                    Select which billing settlement options are enabled for orders in this main category:
+                  </p>
+
+                  {/* Permanent Action */}
+                  <div className="flex items-center justify-between p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-800">
+                    <div className="flex items-center gap-2">
+                      <span>💾</span>
+                      <span>Save Order &amp; Print KOT/BOT</span>
+                    </div>
+                    <span className="text-[9px] font-black uppercase bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded-md">
+                      Permanent
+                    </span>
+                  </div>
+
+                  {/* Advance Select */}
+                  <label className="flex items-center justify-between p-2 rounded-lg bg-white border cursor-pointer hover:bg-indigo-50/50 transition">
+                    <div className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                      <span>💳</span>
+                      <span>Advance Select</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={mainCatAllowedActions.ADVANCE}
+                      onChange={(e) => setMainCatAllowedActions(prev => ({ ...prev, ADVANCE: e.target.checked }))}
+                      className="rounded text-indigo-600 focus:ring-indigo-500"
+                    />
+                  </label>
+
+                  {/* Pre-Bill Print */}
+                  <label className="flex items-center justify-between p-2 rounded-lg bg-white border cursor-pointer hover:bg-indigo-50/50 transition">
+                    <div className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                      <span>🖨️</span>
+                      <span>Pre-Bill Print</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={mainCatAllowedActions.PRE_BILL}
+                      onChange={(e) => setMainCatAllowedActions(prev => ({ ...prev, PRE_BILL: e.target.checked }))}
+                      className="rounded text-indigo-600 focus:ring-indigo-500"
+                    />
+                  </label>
+
+                  {/* Split Bill */}
+                  <label className="flex items-center justify-between p-2 rounded-lg bg-white border cursor-pointer hover:bg-indigo-50/50 transition">
+                    <div className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                      <span>🔀</span>
+                      <span>Split Bill</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={mainCatAllowedActions.SPLIT_BILL}
+                      onChange={(e) => setMainCatAllowedActions(prev => ({ ...prev, SPLIT_BILL: e.target.checked }))}
+                      className="rounded text-indigo-600 focus:ring-indigo-500"
+                    />
+                  </label>
+
+                  {/* Settlement / Settle */}
+                  <label className="flex items-center justify-between p-2 rounded-lg bg-white border cursor-pointer hover:bg-indigo-50/50 transition">
+                    <div className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                      <span>💰</span>
+                      <span>Settlement (Settle)</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={mainCatAllowedActions.SETTLE}
+                      onChange={(e) => setMainCatAllowedActions(prev => ({ ...prev, SETTLE: e.target.checked }))}
+                      className="rounded text-indigo-600 focus:ring-indigo-500"
+                    />
+                  </label>
+
+                  {/* Clear Bill */}
+                  <label className="flex items-center justify-between p-2 rounded-lg bg-white border cursor-pointer hover:bg-indigo-50/50 transition">
+                    <div className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                      <span>🗑️</span>
+                      <span>Clear Bill (Admin Required)</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={mainCatAllowedActions.CLEAR_BILL}
+                      onChange={(e) => setMainCatAllowedActions(prev => ({ ...prev, CLEAR_BILL: e.target.checked }))}
+                      className="rounded text-indigo-600 focus:ring-indigo-500"
+                    />
+                  </label>
+                </div>
+
                 <button type="submit" className="w-full bg-indigo-600 text-white p-3 rounded-xl font-black text-xs">Save</button>
                 {editingMainCatId && (
                   <button type="button" onClick={resetMainCatForm} className="w-full bg-gray-200 text-gray-700 p-2 rounded-xl font-bold text-xs">Cancel Edit</button>
@@ -1672,28 +1895,289 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
             <div className="md:col-span-8 bg-white p-4 rounded-2xl border h-full overflow-y-auto">
               <table className="w-full text-left text-xs">
                 <thead className="bg-gray-50 font-bold text-gray-500 border-b">
-                  <tr><th className="p-3">Category</th><th className="p-3">Mode</th><th className="p-3">Service Charge</th><th className="p-3 text-center">Action</th></tr>
+                  <tr><th className="p-3">Category</th><th className="p-3">Mode</th><th className="p-3">Service Charge</th><th className="p-3">Allowed Actions</th><th className="p-3 text-center">Action</th></tr>
                 </thead>
                 <tbody>
-                  {mainCategories.map(c => (
-                    <tr key={c.id} className="border-b">
-                      <td className="p-3 font-bold">{c.icon} {c.name}</td>
-                      <td className="p-3">{c.usesTables ? '🪑 Tables' : '🧾 Order Numbers'}</td>
-                      <td className="p-3">{c.serviceChargeEnabled ? <span className="text-emerald-600 font-bold">✅ Yes</span> : <span className="text-gray-400 font-bold">— No</span>}</td>
-                      <td className="p-3 text-center space-x-2">
-                        <button onClick={() => { setEditingMainCatId(c.id); setMainCatName(c.name); setMainCatIcon(c.icon); setMainCatUsesTables(c.usesTables); setMainCatServiceCharge(c.serviceChargeEnabled); }} className="text-indigo-600 font-bold hover:underline">Edit</button>
-                        <button onClick={() => handleDeleteMainCategory(c.id)} className="text-red-500 font-bold hover:underline">Delete</button>
-                      </td>
-                    </tr>
-                  ))}
+                  {mainCategories.map(c => {
+                    const aa = c.allowedActions || { SAVE_KOT: true, ADVANCE: true, PRE_BILL: true, SPLIT_BILL: true, SETTLE: true, CLEAR_BILL: true };
+                    return (
+                      <tr key={c.id} className="border-b">
+                        <td className="p-3 font-bold">{c.icon} {c.name}</td>
+                        <td className="p-3">{c.usesTables ? '🪑 Tables' : '🧾 Order Numbers'}</td>
+                        <td className="p-3">{c.serviceChargeEnabled ? <span className="text-emerald-600 font-bold">✅ Yes</span> : <span className="text-gray-400 font-bold">— No</span>}</td>
+                        <td className="p-3">
+                          <div className="flex flex-wrap gap-1 text-[9px] font-bold">
+                            <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded">💾 Save/KOT</span>
+                            {aa.ADVANCE && <span className="bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded">💳 Advance</span>}
+                            {aa.PRE_BILL && <span className="bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded">🖨️ Pre-Bill</span>}
+                            {aa.SPLIT_BILL && <span className="bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded">🔀 Split</span>}
+                            {aa.SETTLE && <span className="bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">💰 Settle</span>}
+                            {aa.CLEAR_BILL && <span className="bg-red-100 text-red-800 px-1.5 py-0.5 rounded">🗑️ Clear</span>}
+                          </div>
+                        </td>
+                        <td className="p-3 text-center space-x-2">
+                          <button onClick={() => {
+                            setEditingMainCatId(c.id);
+                            setMainCatName(c.name);
+                            setMainCatIcon(c.icon);
+                            setMainCatUsesTables(c.usesTables);
+                            setMainCatServiceCharge(c.serviceChargeEnabled);
+                            setMainCatAllowedActions({
+                              ADVANCE: c.allowedActions?.ADVANCE ?? true,
+                              PRE_BILL: c.allowedActions?.PRE_BILL ?? true,
+                              SPLIT_BILL: c.allowedActions?.SPLIT_BILL ?? true,
+                              SETTLE: c.allowedActions?.SETTLE ?? true,
+                              CLEAR_BILL: c.allowedActions?.CLEAR_BILL ?? true,
+                            });
+                          }} className="text-indigo-600 font-bold hover:underline">Edit</button>
+                          <button onClick={() => handleDeleteMainCategory(c.id)} className="text-red-500 font-bold hover:underline">Delete</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                   {mainCategories.length === 0 && (
-                    <tr><td colSpan="4" className="p-8 text-center text-gray-400 font-bold">No main categories yet.</td></tr>
+                    <tr><td colSpan="5" className="p-8 text-center text-gray-400 font-bold">No main categories yet.</td></tr>
                   )}
                 </tbody>
               </table>
             </div>
           </>
         )}
+
+        {/* MENU CUSTOMIZATION WORKSPACE (TOP-TAB LAYOUT) */}
+        {activeSubTab === 'MENU_CUSTOMIZATION' && (() => {
+          // Auto-select first main category if none selected
+          const activeMainCat = menuSelectedMainCat || mainCategories[0];
+
+          const isCatEnabled = (cat, mainCatId) => {
+            if (!cat.allowedMainCategoryIds || cat.allowedMainCategoryIds.length === 0) {
+              if (cat.mainCategoryId) return cat.mainCategoryId === mainCatId;
+              return true;
+            }
+            return cat.allowedMainCategoryIds.includes(mainCatId);
+          };
+
+          const toggleCatForMain = async (cat, mainCatId) => {
+            let current = cat.allowedMainCategoryIds;
+            if (!current || current.length === 0) {
+              if (cat.mainCategoryId) {
+                current = [cat.mainCategoryId];
+              } else {
+                current = mainCategories.map(m => m.id);
+              }
+            }
+            let next;
+            if (current.includes(mainCatId)) {
+              next = current.filter(id => id !== mainCatId);
+            } else {
+              next = [...current, mainCatId];
+            }
+            await db.categories.update(cat.id, { allowedMainCategoryIds: next });
+            Swal.fire({ icon: 'success', title: 'Updated!', toast: true, position: 'top-end', showConfirmButton: false, timer: 700 });
+          };
+
+          const setAllCatsForMain = async (mainCatId, enable) => {
+            const allMcIds = mainCategories.map(m => m.id);
+            for (const cat of categories) {
+              let current = cat.allowedMainCategoryIds || (cat.mainCategoryId ? [cat.mainCategoryId] : allMcIds);
+              let next;
+              if (enable) {
+                next = Array.from(new Set([...current, mainCatId]));
+              } else {
+                next = current.filter(id => id !== mainCatId);
+              }
+              await db.categories.update(cat.id, { allowedMainCategoryIds: next });
+            }
+            Swal.fire({ icon: 'success', title: enable ? 'All Enabled! ✅' : 'All Cleared! 🧹', toast: true, position: 'top-end', showConfirmButton: false, timer: 1000 });
+          };
+
+          return (
+            <div className="md:col-span-12 bg-white rounded-2xl border h-full overflow-hidden flex flex-col shadow-xs">
+              {/* Header Bar */}
+              <div className="flex items-center justify-between px-5 py-3.5 border-b shrink-0 bg-gray-50/80">
+                <div>
+                  <h3 className="text-sm font-black text-gray-800 flex items-center gap-2">
+                    <span>🍽️ Menu Customization</span>
+                  </h3>
+                  <p className="text-[11px] text-gray-500 mt-0.5">Select a Main Category tab below, then toggle which food categories to show on the billing screen.</p>
+                </div>
+                <button
+                  onClick={() => setMenuReportView(v => !v)}
+                  className={`px-3.5 py-1.5 rounded-xl font-black text-xs border transition active:scale-95 ${menuReportView ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-100'}`}
+                >
+                  {menuReportView ? '✏️ Back to Customizer' : '📊 Full Menu Overview'}
+                </button>
+              </div>
+
+              {!menuReportView ? (
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  {/* Top Horizontal Main Category Tabs */}
+                  <div className="bg-gray-100/70 p-2.5 border-b shrink-0 overflow-x-auto">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-black text-gray-400 uppercase tracking-wide px-2 shrink-0">Main Category:</span>
+                      {mainCategories.length === 0 && <span className="text-xs text-gray-400 italic">No main categories found.</span>}
+                      {mainCategories.map(mc => {
+                        const enabledCats = categories.filter(c => isCatEnabled(c, mc.id));
+                        const isSelected = activeMainCat?.id === mc.id;
+                        return (
+                          <button
+                            key={mc.id}
+                            onClick={() => setMenuSelectedMainCat(mc)}
+                            className={`px-4 py-2 rounded-xl font-black text-xs flex items-center gap-2 whitespace-nowrap transition active:scale-95 border ${isSelected ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white border-gray-200 text-gray-700 hover:bg-indigo-50 hover:border-indigo-200'}`}
+                          >
+                            <span className="text-base">{mc.icon}</span>
+                            <span>{mc.name}</span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${isSelected ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-500'}`}>
+                              {enabledCats.length} active
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Main Category Workspace */}
+                  {!activeMainCat ? (
+                    <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-gray-400">
+                      <span className="text-4xl mb-2">🗂️</span>
+                      <p className="text-xs font-bold">No Main Categories available</p>
+                    </div>
+                  ) : (() => {
+                    const enabledCats = categories.filter(c => isCatEnabled(c, activeMainCat.id));
+                    return (
+                      <div className="flex-1 overflow-y-auto p-5 flex flex-col">
+                        {/* Control Sub-header */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b mb-4 shrink-0 bg-white">
+                          <div className="flex items-center gap-2">
+                            <span className="text-2xl">{activeMainCat.icon}</span>
+                            <div>
+                              <h4 className="font-black text-sm text-gray-800">
+                                Categories active in <span className="text-indigo-600">{activeMainCat.name}</span>
+                              </h4>
+                              <p className="text-[11px] text-gray-500">
+                                {enabledCats.length} of {categories.length} categories enabled for this main category
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setAllCatsForMain(activeMainCat.id, true)}
+                              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 transition"
+                            >
+                              ✅ Enable All
+                            </button>
+                            <button
+                              onClick={() => setAllCatsForMain(activeMainCat.id, false)}
+                              className="px-3 py-1.5 rounded-xl text-xs font-bold bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 transition"
+                            >
+                              🧹 Disable All
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Category Cards Grid */}
+                        {categories.length === 0 ? (
+                          <div className="text-center py-12 text-gray-400">
+                            <p className="text-4xl mb-2">📂</p>
+                            <p className="text-xs font-bold text-gray-600">No Food Categories exist yet.</p>
+                            <p className="text-[11px] text-gray-400 mt-1">Use the "Manage Categories" tab to create your categories first.</p>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5">
+                            {categories.map(cat => {
+                              const enabled = isCatEnabled(cat, activeMainCat.id);
+                              const catItems = items.filter(i => i.categoryId === cat.id);
+                              return (
+                                <div
+                                  key={cat.id}
+                                  onClick={() => toggleCatForMain(cat, activeMainCat.id)}
+                                  className={`p-4 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between select-none ${enabled ? 'bg-gradient-to-br from-indigo-50/90 to-white border-indigo-500 shadow-xs scale-[1.01]' : 'bg-gray-50/60 border-gray-200 opacity-60 hover:opacity-100 hover:border-gray-300'}`}
+                                >
+                                  <div className="flex items-start justify-between gap-2 mb-3">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="font-black text-xs text-gray-900 truncate mb-1">{cat.name}</div>
+                                      <span className={`text-[9px] font-black px-2 py-0.5 rounded-full inline-block ${cat.printerType === 'BOT' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
+                                        {cat.printerType || 'KOT'}
+                                      </span>
+                                    </div>
+                                    <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 border transition ${enabled ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs' : 'bg-white border-gray-300 text-transparent'}`}>
+                                      ✓
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center justify-between pt-2.5 border-t border-gray-100 text-[11px]">
+                                    <span className="text-gray-500 font-bold">{catItems.length} item{catItems.length !== 1 ? 's' : ''}</span>
+                                    <span className={`font-black text-[10px] ${enabled ? 'text-indigo-600' : 'text-gray-400'}`}>
+                                      {enabled ? '● Active in POS' : '○ Hidden'}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              ) : (
+                /* Report / Summary view */
+                <div className="flex-1 overflow-y-auto p-5 space-y-5">
+                  {mainCategories.map(mc => {
+                    const mcCats = categories.filter(c => isCatEnabled(c, mc.id));
+                    const enabledCatIds = new Set(mcCats.map(c => c.id));
+                    const mcItems = items.filter(i => enabledCatIds.has(i.categoryId));
+                    return (
+                      <div key={mc.id} className="border rounded-2xl overflow-hidden shadow-xs">
+                        <div className="bg-gradient-to-r from-indigo-600 to-indigo-700 px-4 py-3 flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span className="text-2xl">{mc.icon}</span>
+                            <div>
+                              <div className="font-black text-white text-sm">{mc.name}</div>
+                              <div className="text-indigo-200 text-[10px]">{mcCats.length} categories visible · {mcItems.length} total items</div>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => { setMenuReportView(false); setMenuSelectedMainCat(mc); }}
+                            className="bg-white/20 hover:bg-white/30 text-white text-[10px] font-black px-3 py-1.5 rounded-xl transition"
+                          >
+                            ✏️ Customize Menu
+                          </button>
+                        </div>
+                        <div className="p-3 bg-gray-50 space-y-3">
+                          {mcCats.length === 0 ? (
+                            <p className="text-xs text-gray-400 italic text-center py-3">No categories enabled for {mc.name}.</p>
+                          ) : (
+                            mcCats.map(cat => {
+                              const catItems = items.filter(i => i.categoryId === cat.id);
+                              return (
+                                <div key={cat.id} className="bg-white border rounded-xl overflow-hidden">
+                                  <div className="flex items-center justify-between px-3 py-2 bg-gray-100 border-b">
+                                    <span className="font-black text-xs text-gray-700">{cat.name}</span>
+                                    <span className="text-[10px] text-gray-500 font-bold">{catItems.length} items</span>
+                                  </div>
+                                  <div className="p-2">
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5">
+                                      {catItems.map(item => (
+                                        <div key={item.id} className="bg-gray-50 border rounded-lg px-2 py-1.5">
+                                          <div className="text-[11px] font-bold text-gray-800 truncate">{item.name}</div>
+                                          <div className="text-[10px] text-indigo-600 font-bold">Rs.{parseFloat(item.sellingPrice || 0).toFixed(2)}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* CATEGORIES WORKSPACE */}
         {activeSubTab === 'CATEGORIES' && (
@@ -1746,16 +2230,38 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                     <label className="block text-xs font-bold text-gray-500 mb-1">Cost Price (Rs.)</label>
                     <input type="number" step="0.01" min="0" value={itemCostPrice} onChange={(e) => setItemCostPrice(e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs" placeholder="0.00" />
                   </div>
-                  <div>
-                    <label className="block text-xs font-bold text-gray-500 mb-1">Selling Price (Rs.)</label>
-                    <input type="number" step="0.01" min="0" value={itemPrice} onChange={(e) => setItemPrice(e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs" placeholder="0.00" required />
-                  </div>
-                </div>
-
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Service Charge (%)</label>
-                  <input type="number" step="0.01" min="0" value={serviceCharge} onChange={(e) => setServiceCharge(e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs" placeholder="10" required />
+                  <label className="block text-xs font-bold text-gray-500 mb-1">
+                    {isInclusiveServiceCharge ? 'Final Selling Price (Incl. SC) (Rs.)' : 'Base Selling Price (Excl. SC) (Rs.)'}
+                  </label>
+                  <input type="number" step="0.01" min="0" value={itemPrice} onChange={(e) => setItemPrice(e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs" placeholder="0.00" required />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">Service Charge (%)</label>
+                <input type="number" step="0.01" min="0" value={serviceCharge} onChange={(e) => setServiceCharge(e.target.value)} className="w-full p-2.5 border rounded-xl font-bold text-xs" placeholder="10" required />
+              </div>
+
+              <div className="border rounded-xl p-2.5 bg-indigo-50/60 border-indigo-200 space-y-1.5">
+                <label className="flex items-center space-x-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={isInclusiveServiceCharge}
+                    onChange={(e) => setIsInclusiveServiceCharge(e.target.checked)}
+                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span className="text-xs font-black text-indigo-900">Price Includes Service Charge</span>
+                </label>
+                {isInclusiveServiceCharge && parseFloat(itemPrice || 0) > 0 && parseFloat(serviceCharge || 0) > 0 && (
+                  <div className="text-[10px] font-bold text-indigo-800 bg-white p-2 rounded-lg border border-indigo-200 leading-tight">
+                    💡 Customer pays: <b>Rs.{parseFloat(itemPrice).toFixed(2)}</b>
+                    <div className="text-gray-500 font-normal mt-0.5">
+                      Base Price: Rs.{(parseFloat(itemPrice) / (1 + parseFloat(serviceCharge)/100)).toFixed(2)} | SC ({serviceCharge}%): Rs.{(parseFloat(itemPrice) - (parseFloat(itemPrice) / (1 + parseFloat(serviceCharge)/100))).toFixed(2)}
+                    </div>
+                  </div>
+                )}
+              </div>
 
                 {itemCostPrice && itemPrice && (
                   <div className="text-[11px] font-bold text-gray-500 bg-gray-50 border rounded-xl p-2">
@@ -1861,9 +2367,10 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                               setEditingItemId(i.id);
                               setItemName(i.name);
                               setItemCostPrice(i.costPrice !== undefined && i.costPrice !== null ? i.costPrice.toString() : '');
-                              setItemPrice(i.sellingPrice.toString());
+                              setIsInclusiveServiceCharge(!!i.isInclusiveServiceCharge);
+                              setItemPrice(i.isInclusiveServiceCharge && i.inclusivePrice ? i.inclusivePrice.toString() : i.sellingPrice.toString());
                               setItemCategory(i.categoryId.toString());
-                              setServiceCharge(i.serviceChargePercentage.toString());
+                              setServiceCharge(i.serviceChargePercentage !== undefined ? i.serviceChargePercentage.toString() : '10');
                               setIsStockManaged(!!i.isStockManaged);
                               setStockLevel(i.stockLevel !== undefined && i.stockLevel !== null ? i.stockLevel.toString() : '');
                             }}
@@ -1946,17 +2453,24 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
               {/* Filters + search */}
               <div className="grid grid-cols-2 sm:grid-cols-12 gap-2 text-xs items-end">
                 <div className="col-span-1 sm:col-span-2">
+                  <label className="block font-bold text-gray-400">Main Category</label>
+                  <select value={selectedMainCategoryFilter} onChange={(e) => setSelectedMainCategoryFilter(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold bg-white">
+                    <option value="ALL">All Main Categories</option>
+                    {mainCategories.map(mc => <option key={mc.id} value={mc.name}>{mc.icon} {mc.name}</option>)}
+                  </select>
+                </div>
+                <div className="col-span-1 sm:col-span-2">
+                  <label className="block font-bold text-gray-400">Food Category</label>
+                  <select value={selectedCategoryFilter} onChange={(e) => setSelectedCategoryFilter(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold bg-white">
+                    <option value="ALL">All Categories</option>
+                    {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div className="col-span-1 sm:col-span-2">
                   <label className="block font-bold text-gray-400">Item</label>
                   <select value={selectedItemFilter} onChange={(e) => setSelectedItemFilter(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold bg-white">
                     <option value="ALL">All Items</option>
                     {items.map(i => <option key={i.id} value={i.name}>{i.name}</option>)}
-                  </select>
-                </div>
-                <div className="col-span-1 sm:col-span-2">
-                  <label className="block font-bold text-gray-400">Category</label>
-                  <select value={selectedCategoryFilter} onChange={(e) => setSelectedCategoryFilter(e.target.value)} className="w-full p-1.5 border rounded-lg font-bold bg-white">
-                    <option value="ALL">All Categories</option>
-                    {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
                 <div className="col-span-1 sm:col-span-2">
@@ -2237,6 +2751,117 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                )}
+
+                {/* MONTHLY HIERARCHY SALES REPORT (Main Category -> Sub Category -> Items) */}
+                {filteredOrders.length > 0 && reportType === 'MONTHLY_HIERARCHY' && (
+                  <div className="space-y-6">
+                    <div className="bg-gradient-to-r from-indigo-900 to-indigo-800 text-white p-4 rounded-2xl flex flex-wrap items-center justify-between gap-4 shadow-xs">
+                      <div>
+                        <div className="text-[10px] font-black text-indigo-300 uppercase tracking-widest">Monthly Sales Breakdown</div>
+                        <h4 className="text-lg font-black flex items-center gap-2 mt-0.5">
+                          <span>📅</span>
+                          <span>Hierarchical Sales Report ({dateRangeLabel})</span>
+                        </h4>
+                        <p className="text-xs text-indigo-200 mt-1">Grouped by Main Category → Sub Category → Food Items</p>
+                      </div>
+                      <div className="flex items-center gap-4 text-right">
+                        <div>
+                          <div className="text-[10px] text-indigo-300 font-bold uppercase">Total Revenue</div>
+                          <div className="text-xl font-black text-emerald-400">Rs.{totalNetSales.toFixed(2)}</div>
+                        </div>
+                        <div className="border-l border-indigo-700 pl-4">
+                          <div className="text-[10px] text-indigo-300 font-bold uppercase">Items Sold</div>
+                          <div className="text-xl font-black text-white">{totalItemsSold}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {monthlyHierarchyList.length === 0 ? (
+                      <div className="text-center text-gray-400 py-10 font-bold">No itemized sales found for this period.</div>
+                    ) : (
+                      <div className="space-y-5">
+                        {monthlyHierarchyList.map((mc, mcIdx) => (
+                          <div key={mcIdx} className="border-2 border-indigo-200 rounded-2xl overflow-hidden shadow-xs bg-white">
+                            {/* Main Category Banner */}
+                            <div className="bg-gradient-to-r from-indigo-700 to-indigo-600 px-4 py-3 text-white flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <span className="text-xl font-black bg-white/20 px-2 py-1 rounded-lg">🗂️</span>
+                                <div>
+                                  <h4 className="font-black text-sm">{mc.name}</h4>
+                                  <div className="text-[11px] text-indigo-200">{mc.subCategories.length} categories · {mc.totalQty} items sold</div>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <div className="text-[10px] text-indigo-200 font-bold uppercase">Main Category Revenue</div>
+                                <div className="text-base font-black text-emerald-300">Rs.{mc.totalRevenue.toFixed(2)}</div>
+                              </div>
+                            </div>
+
+                            {/* Sub Categories & Items */}
+                            <div className="p-4 space-y-4 bg-gray-50/50">
+                              {mc.subCategories.map((sc, scIdx) => (
+                                <div key={scIdx} className="bg-white border rounded-xl overflow-hidden shadow-2xs">
+                                  {/* Sub Category Header */}
+                                  <div className="bg-gray-100 px-4 py-2.5 flex items-center justify-between border-b">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-indigo-600 font-black">📂</span>
+                                      <span className="font-black text-xs text-gray-800">{sc.name}</span>
+                                    </div>
+                                    <div className="flex items-center gap-3 text-xs font-bold">
+                                      <span className="text-gray-500">{sc.totalQty} items sold</span>
+                                      <span className="text-indigo-600 bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-200">
+                                        Rs.{sc.totalRevenue.toFixed(2)}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {/* Items Table */}
+                                  <div className="overflow-x-auto">
+                                    <table className="w-full text-left text-xs">
+                                      <thead>
+                                        <tr className="bg-gray-50 text-gray-500 border-b text-[11px] font-bold">
+                                          <th className="p-2.5">Item Name</th>
+                                          <th className="p-2.5 text-right">Selling Price</th>
+                                          <th className="p-2.5 text-right">Cost Price</th>
+                                          <th className="p-2.5 text-right">Qty Sold</th>
+                                          <th className="p-2.5 text-right">Total Revenue</th>
+                                          <th className="p-2.5 text-right">Gross Profit</th>
+                                          <th className="p-2.5 text-right">Margin %</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y">
+                                        {sc.items.map((it, itemIdx) => {
+                                          const marginPct = it.revenue > 0 ? ((it.profit / it.revenue) * 100).toFixed(1) : '0.0';
+                                          return (
+                                            <tr key={itemIdx} className="hover:bg-indigo-50/40 transition">
+                                              <td className="p-2.5 font-bold text-gray-800">{it.name}</td>
+                                              <td className="p-2.5 text-right text-gray-600">Rs.{(it.sellingPrice || 0).toFixed(2)}</td>
+                                              <td className="p-2.5 text-right text-gray-400">Rs.{(it.costPrice || 0).toFixed(2)}</td>
+                                              <td className="p-2.5 text-right font-black text-gray-700">{it.qty}</td>
+                                              <td className="p-2.5 text-right font-black text-indigo-600">Rs.{it.revenue.toFixed(2)}</td>
+                                              <td className={`p-2.5 text-right font-black ${it.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                Rs.{it.profit.toFixed(2)}
+                                              </td>
+                                              <td className="p-2.5 text-right">
+                                                <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${parseFloat(marginPct) >= 30 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                                                  {marginPct}%
+                                                </span>
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 

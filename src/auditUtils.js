@@ -10,9 +10,11 @@
 import Dexie from 'dexie';
 
 export const auditDb = new Dexie('SapSanPOS_AuditLog');
-auditDb.version(1).stores({
+auditDb.version(3).stores({
   deletedItems: '++id, deletedAt, tableNumber',
   deletedBills: '++id, deletedAt, tableNumber',
+  stockAdjustments: '++id, adjustedAt, itemName, adjustedBy',
+  activities: '++id, timestamp, actionType, category, performedBy',
 });
 
 // Call when a single item is removed from an already-saved order
@@ -50,5 +52,40 @@ export const logDeletedBill = async ({ order, deletedBy }) => {
     });
   } catch (err) {
     console.error('Failed to log deleted bill (deletion itself still succeeded):', err);
+  }
+};
+
+// Call when item stock level is adjusted (restock, wastage, manual correction)
+export const logStockAdjustment = async ({ item, previousStock, newStock, changeQty, type, reason, adjustedBy }) => {
+  try {
+    await auditDb.stockAdjustments.add({
+      adjustedAt: new Date().toISOString(),
+      itemId: item.id,
+      itemName: item.name,
+      previousStock,
+      newStock,
+      changeQty,
+      type, // 'ADD' | 'SUBTRACT' | 'SET'
+      reason: reason || '',
+      adjustedBy: adjustedBy || 'Unknown',
+    });
+  } catch (err) {
+    console.error('Failed to log stock adjustment:', err);
+  }
+};
+
+// Call to record system activity with user details & timestamp
+export const logActivity = async ({ actionType, category = 'GENERAL', description, details = {}, performedBy }) => {
+  try {
+    await auditDb.activities.add({
+      timestamp: new Date().toISOString(),
+      actionType, // 'DAY_OPEN' | 'DAY_END' | 'BILL_SETTLED' | 'ORDER_SAVED' | 'STOCK_ADJUST' | 'ITEM_DELETED' | 'BILL_VOIDED' | 'ADVANCE_APPLIED'
+      category, // 'SESSION' | 'SALES' | 'STOCK' | 'SECURITY'
+      description: description || actionType,
+      details,
+      performedBy: performedBy || 'System',
+    });
+  } catch (err) {
+    console.error('Failed to log activity:', err);
   }
 };

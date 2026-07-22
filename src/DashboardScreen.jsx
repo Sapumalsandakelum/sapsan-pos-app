@@ -5,7 +5,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { getMostRecentSession } from './dayEndUtils';
 
 export default function DashboardScreen() {
-  // SETTLED තත්ත්වයේ ඇති සියලුම ඕඩර්ස් ලයිව් ක්වෙරි කර ගැනීම
+  // Live query all SETTLED orders from db
   const settledOrders = useLiveQuery(() => 
     db.orders.where('status').equals('SETTLED').toArray()
   ) || [];
@@ -17,36 +17,38 @@ export default function DashboardScreen() {
   }, []);
 
   // Filter orders based on active/most recent session timestamps to support late shifts
-  const todaysOrders = settledOrders.filter(order => {
-    if (!order.settledDate) return false;
-    if (!daySession) {
-      return new Date(order.settledDate).toDateString() === new Date().toDateString();
-    }
-    const start = new Date(daySession.startedAt).getTime();
-    const end = daySession.endedAt ? new Date(daySession.endedAt).getTime() : Infinity;
-    const t = new Date(order.settledDate).getTime();
-    return t >= start && t <= end;
-  });
+  const todaysOrders = settledOrders
+    .filter(order => {
+      if (!order.settledDate || !order.items || order.items.length === 0) return false;
+      if (!daySession) {
+        return new Date(order.settledDate).toDateString() === new Date().toDateString();
+      }
+      const start = new Date(daySession.startedAt).getTime();
+      const end = daySession.endedAt ? new Date(daySession.endedAt).getTime() : Infinity;
+      const t = new Date(order.settledDate).getTime();
+      return t >= start && t <= end;
+    })
+    .sort((a, b) => new Date(b.settledDate).getTime() - new Date(a.settledDate).getTime());
 
   // ==========================================
-  // 📈 ගණනය කිරීම් (CALCULATIONS)
+  // 📈 CALCULATIONS
   // ==========================================
   
   let todayRevenue = 0;
   let todayCash = 0;
   let todayCard = 0;
   let todayTransfer = 0;
-  const itemSalesMap = {}; // වැඩිපුරම විකිණිච්ච අයිටම්ස් ට්‍රැක් කරන්න
+  const itemSalesMap = {}; // Track most sold items
 
   todaysOrders.forEach(order => {
     todayRevenue += order.netTotal || 0;
 
-    // පේමන්ට් මෙතඩ් අනුව බෙදා වෙන් කිරීම
+    // Breakdown by payment method
     if (order.paymentMethod === 'CASH') todayCash += order.netTotal || 0;
     else if (order.paymentMethod === 'CARD') todayCard += order.netTotal || 0;
     else if (order.paymentMethod === 'TRANSFER') todayTransfer += order.netTotal || 0;
 
-    // අයිටම්ස් වල ප්‍රමාණයන් එකතු කිරීම
+    // Aggregate item quantities
     order.items.forEach(item => {
       if (itemSalesMap[item.name]) {
         itemSalesMap[item.name] += item.quantity;
@@ -56,7 +58,7 @@ export default function DashboardScreen() {
     });
   });
 
-  // වැඩිපුරම විකිණිච්ච අයිටම්ස් ටොප් 5 Sort කර ගැනීම
+  // Sort top 5 best selling items
   const topSellingItems = Object.entries(itemSalesMap)
     .map(([name, qty]) => ({ name, qty }))
     .sort((a, b) => b.qty - a.qty)

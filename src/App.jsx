@@ -10,12 +10,17 @@ import { getSession, clearSession } from './authUtils';
 import { runDailyBackupIfNeeded } from './backupUtils';
 import { initLanSync, onSyncConnectionChange, getSyncStatus } from './lanSync';
 import { getActiveSession, startNewDaySession } from './dayEndUtils';
+import { logActivity } from './auditUtils';
 import LicenseGate from './LicenseGate';
 import Swal from 'sweetalert2';
+import QuickCalculatorModal from './QuickCalculatorModal';
+
+import { db, cleanupOrphanedPendingOrders } from './db';
 
 function AppContent() {
   const [session, setSession] = useState(() => getSession());
   const [currentScreen, setCurrentScreen] = useState('BILLING'); // BILLING, ADMIN, or DASHBOARD
+  const [isCalcOpen, setIsCalcOpen] = useState(false);
 
   // Bumped every time the Billing tab is clicked — forces POSFlow to remount
   // fresh (back to the Main Category screen). Must live here, above the
@@ -38,6 +43,7 @@ function AppContent() {
   useEffect(() => {
     runDailyBackupIfNeeded();
     initLanSync();
+    cleanupOrphanedPendingOrders();
   }, []);
 
   const [activeDaySession, setActiveDaySession] = useState(null);
@@ -82,6 +88,13 @@ function AppContent() {
         try {
           const newSession = await startNewDaySession(session.username);
           setActiveDaySession(newSession);
+          await logActivity({
+            actionType: 'DAY_OPEN',
+            category: 'SESSION',
+            description: `Started business day for ${newSession.dateKey}`,
+            details: { dateKey: newSession.dateKey, startedAt: newSession.startedAt },
+            performedBy: session.username
+          });
           Swal.fire({
             title: 'Day Started! ✅',
             text: `Business day for ${newSession.dateKey} is now open.`,
@@ -176,6 +189,15 @@ function AppContent() {
           >
             <span>{activeDaySession ? '🟢' : '🔴'}</span>
             <span>{activeDaySession ? `Day Open (${activeDaySession.dateKey})` : 'Day Closed'}</span>
+          </button>
+
+          {/* Quick Calculator Button (Icon Only) */}
+          <button
+            onClick={() => setIsCalcOpen(true)}
+            title="Open Calculator"
+            className="flex items-center justify-center px-2 py-1 rounded-xl border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-sm font-black transition shadow-xs cursor-pointer ml-1"
+          >
+            <span>🧮</span>
           </button>
         </div>
 
@@ -393,6 +415,8 @@ function AppContent() {
           </>
         )}
       </main>
+
+      <QuickCalculatorModal isOpen={isCalcOpen} onClose={() => setIsCalcOpen(false)} />
     </div>
   );
 }

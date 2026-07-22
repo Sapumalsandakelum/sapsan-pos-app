@@ -12,9 +12,18 @@ mainCategoryDb.version(1).stores({
   categories: '++id, sortOrder'
 });
 
+export const DEFAULT_ALLOWED_ACTIONS = {
+  SAVE_KOT: true,   // Permanent (always enabled)
+  ADVANCE: true,    // 💳 Advance Select
+  PRE_BILL: true,   // Pre-Bill 🖨️ Print
+  SPLIT_BILL: true, // Split 🔀 Split Bill
+  SETTLE: true,     // Settlement 💰 Settle
+  CLEAR_BILL: true  // 🗑️ Clear Bill (Admin Required)
+};
+
 const DEFAULTS = [
-  { name: 'Dine-in', icon: '🍽️', usesTables: true, serviceChargeEnabled: true, sortOrder: 1 },
-  { name: 'Take-Away', icon: '🛍️', usesTables: false, serviceChargeEnabled: false, sortOrder: 2 },
+  { name: 'Dine-in', icon: '🍽️', usesTables: true, serviceChargeEnabled: true, allowedActions: { ...DEFAULT_ALLOWED_ACTIONS }, sortOrder: 1 },
+  { name: 'Take-Away', icon: '🛍️', usesTables: false, serviceChargeEnabled: false, allowedActions: { ...DEFAULT_ALLOWED_ACTIONS }, sortOrder: 2 },
 ];
 
 // Called once on app load — seeds the two defaults if nothing exists yet, so

@@ -1,17 +1,12 @@
 // src/licenseUtils.js
-// 🔑 License activation for this specific installation. Talks to the small
-// Vercel-hosted license API (see /license-server) to bind this PC to one
-// license key, and periodically re-checks that it's still valid and not expired.
+import { db } from './db';
 
-// 👇 Replace this with your deployed license server URL after running `vercel --prod`
 const LICENSE_API_BASE = 'https://sapsanpos.vercel.app';
 
 const DEVICE_ID_KEY = 'pos_device_id';
 const LICENSE_STATE_KEY = 'pos_license_state';
 
-const OFFLINE_GRACE_DAYS = 14;      // max stretch allowed without a successful check-in
-const EXPIRY_WARNING_DAYS = 14;     // start showing a "renew soon" notice this many days out
-
+const EXPIRY_WARNING_DAYS = 15;     // start showing a "renew soon" notice 15 days out
 const FETCH_TIMEOUT_MS = 6000;
 
 const generateUuid = () => {
@@ -34,18 +29,7 @@ const fetchWithTimeout = async (url, options) => {
   }
 };
 
-// This ID lives in the browser's local storage — NOT in the project files —
-// which is exactly why copying the source folder to another PC doesn't carry
-// it along. It's generated once and never regenerated after that.
-export const getDeviceId = () => {
-  let id = localStorage.getItem(DEVICE_ID_KEY);
-  if (!id) {
-    id = generateUuid();
-    localStorage.setItem(DEVICE_ID_KEY, id);
-  }
-  return id;
-};
-
+// Synchronous get from localStorage
 export const getLicenseState = () => {
   try {
     const saved = localStorage.getItem(LICENSE_STATE_KEY);
@@ -55,17 +39,60 @@ export const getLicenseState = () => {
   }
 };
 
+// Async get from multi-layer storage (localStorage + IndexedDB backup)
+export const getLicenseStateAsync = async () => {
+  try {
+    let state = getLicenseState();
+    if (state) return state;
+
+    // Fallback to IndexedDB local disk store if localStorage was cleared
+    if (db && db.license) {
+      const dbSaved = await db.license.get('active_license');
+      if (dbSaved) {
+        localStorage.setItem(LICENSE_STATE_KEY, JSON.stringify(dbSaved));
+        return dbSaved;
+      }
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+};
+
+// Multi-layer local store: writes to localStorage AND IndexedDB
 const saveLicenseState = (state) => {
-  localStorage.setItem(LICENSE_STATE_KEY, JSON.stringify(state));
+  try {
+    localStorage.setItem(LICENSE_STATE_KEY, JSON.stringify(state));
+    if (db && db.license) {
+      db.license.put({ id: 'active_license', ...state }).catch(err => console.error('IndexedDB license save warning:', err));
+    }
+  } catch (e) {
+    console.error('Error saving license state locally:', e);
+  }
 };
 
 export const clearLicenseState = () => {
   localStorage.removeItem(LICENSE_STATE_KEY);
+  if (db && db.license) {
+    db.license.delete('active_license').catch(() => {});
+  }
 };
 
-const daysSince = (isoString) => {
-  if (!isoString) return Infinity;
-  return (Date.now() - new Date(isoString).getTime()) / (1000 * 60 * 60 * 24);
+// Helper to get days remaining on the active license
+export const getLicenseDaysRemaining = () => {
+  const state = getLicenseState();
+  if (!state || !state.expiresAt) return null;
+  const daysLeft = daysUntil(state.expiresAt);
+  return daysLeft !== Infinity ? Math.max(0, Math.ceil(daysLeft)) : null;
+};
+
+export const getDeviceId = () => {
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id = generateUuid();
+    localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
 };
 
 const daysUntil = (isoString) => {
@@ -102,16 +129,13 @@ export const activateLicense = async (licenseKeyInput) => {
 
 // Call when the app loads (and periodically while it stays open). Returns:
 //   { status: 'NEEDS_ACTIVATION' }
-//   { status: 'OK', expiresAt, expiringSoonDays: number|null }
+//   { status: 'OK', expiresAt, daysRemaining, expiringSoonDays: number|null }
 //   { status: 'BLOCKED', reason: 'REVOKED' | 'EXPIRED' | 'ALREADY_ACTIVATED_ELSEWHERE', expiresAt? }
-//   { status: 'NEEDS_ONLINE_CHECK' }  — offline too long, must reconnect to keep going
 export const checkLicenseStatus = async () => {
-  const state = getLicenseState();
+  const state = await getLicenseStateAsync();
   if (!state) return { status: 'NEEDS_ACTIVATION' };
 
-  // Always try to check in with the server first. This is what makes a revoke
-  // or expiry actually take effect promptly instead of waiting out a cache window —
-  // we only fall back to the cached local state if the server truly can't be reached.
+  // 1. Try online verification with license server
   try {
     const res = await fetchWithTimeout(`${LICENSE_API_BASE}/api/license/validate`, {
       method: 'POST',
@@ -124,20 +148,24 @@ export const checkLicenseStatus = async () => {
       const updated = { ...state, lastValidatedAt: new Date().toISOString(), expiresAt: data.expiresAt, clientName: data.clientName };
       saveLicenseState(updated);
       const daysLeft = daysUntil(data.expiresAt);
-      return { status: 'OK', expiresAt: data.expiresAt, expiringSoonDays: daysLeft <= EXPIRY_WARNING_DAYS ? Math.ceil(daysLeft) : null };
+      const daysRemaining = daysLeft !== Infinity ? Math.max(0, Math.ceil(daysLeft)) : null;
+      const expiringSoonDays = daysRemaining != null && daysRemaining <= EXPIRY_WARNING_DAYS ? daysRemaining : null;
+      return { status: 'OK', expiresAt: data.expiresAt, daysRemaining, expiringSoonDays, clientName: data.clientName, licenseKey: state.licenseKey };
     }
-    // Server explicitly rejected — genuinely blocked, not just offline
+    // Server explicitly rejected (e.g. key revoked) — genuinely blocked
     return { status: 'BLOCKED', reason: data.reason, expiresAt: data.expiresAt };
   } catch (err) {
-    // Couldn't reach the server (offline / no connection) — fall back to the
-    // last-known cached state, but only within the offline grace window
+    // Couldn't reach server (offline / no internet connection)
   }
 
-  const staleness = daysSince(state.lastValidatedAt);
-  if (staleness >= OFFLINE_GRACE_DAYS) {
-    return { status: 'NEEDS_ONLINE_CHECK' };
-  }
-
+  // 2. Offline Mode — Fallback to local stored license!
+  // If the locally stored license is valid and unexpired (Date.now() < expiresAt), allow POS to run 100% offline!
   const daysLeft = daysUntil(state.expiresAt);
-  return { status: 'OK', expiresAt: state.expiresAt, expiringSoonDays: daysLeft <= EXPIRY_WARNING_DAYS ? Math.ceil(daysLeft) : null };
+  if (daysLeft <= 0) {
+    return { status: 'BLOCKED', reason: 'EXPIRED', expiresAt: state.expiresAt };
+  }
+
+  const daysRemaining = daysLeft !== Infinity ? Math.max(0, Math.ceil(daysLeft)) : null;
+  const expiringSoonDays = daysRemaining != null && daysRemaining <= EXPIRY_WARNING_DAYS ? daysRemaining : null;
+  return { status: 'OK', expiresAt: state.expiresAt, daysRemaining, expiringSoonDays, clientName: state.clientName, licenseKey: state.licenseKey };
 };

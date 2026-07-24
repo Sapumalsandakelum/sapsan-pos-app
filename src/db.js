@@ -43,6 +43,17 @@ db.version(7).stores({
   advanceBookings: '++id, customerName, phone, bookingDate, amount, paymentMethod, status, createdAt, redeemedOrderId'
 });
 
+// v8: adds license table for persistent local offline license storage
+db.version(8).stores({
+  categories: '++id, name, printerType, mainCategoryId',
+  items: '++id, name, categoryId, costPrice, sellingPrice, serviceChargePercentage, status, isInclusiveServiceCharge, inclusivePrice',
+  orders: '++id, orderDate, tableNumber, subTotal, totalServiceCharge, discountAmount, netTotal, paymentMethod, status, settledDate, advanceBookingId',
+  orderItems: '++id, orderId, itemId, quantity, unitPrice, calculatedServiceCharge',
+  admins: '++id, username, password, role',
+  advanceBookings: '++id, customerName, phone, bookingDate, amount, paymentMethod, status, createdAt, redeemedOrderId',
+  license: 'id'
+});
+
 export const cleanupOrphanedPendingOrders = async () => {
   try {
     const allOrders = await db.orders.toArray();

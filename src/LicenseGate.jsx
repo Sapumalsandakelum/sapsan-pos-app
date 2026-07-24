@@ -1,7 +1,19 @@
 // src/LicenseGate.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
 import { activateLicense, checkLicenseStatus } from './licenseUtils';
 import { DEVELOPER_CREDIT_LINE_1, DEVELOPER_CREDIT_LINE_2 } from './printUtils';
+import Swal from 'sweetalert2';
+
+export const LicenseContext = createContext({
+  status: 'CHECKING',
+  expiresAt: null,
+  daysRemaining: null,
+  expiringSoonDays: null,
+  licenseKey: null,
+  clientName: null
+});
+
+export const useLicense = () => useContext(LicenseContext);
 
 const BLOCK_MESSAGES = {
   ALREADY_ACTIVATED_ELSEWHERE: 'This license key is already active on a different device. Each key can only be used on one PC.',
@@ -14,11 +26,12 @@ const BLOCK_MESSAGES = {
 export default function LicenseGate({ children }) {
   const [status, setStatus] = useState('CHECKING');
   const [blockReason, setBlockReason] = useState(null);
-  const [expiryInfo, setExpiryInfo] = useState(null); // { expiresAt, expiringSoonDays }
+  const [expiryInfo, setExpiryInfo] = useState(null); // { expiresAt, daysRemaining, expiringSoonDays }
   const [licenseKeyInput, setLicenseKeyInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [dismissedWarning, setDismissedWarning] = useState(false);
+  const hasShownStartupAlert = useRef(false);
 
   const runCheck = async (silent = false) => {
     if (!silent) setStatus('CHECKING');
@@ -26,7 +39,38 @@ export default function LicenseGate({ children }) {
     setStatus(result.status); // if this comes back BLOCKED, the app view swaps immediately either way
     setBlockReason(result.reason || null);
     if (result.status === 'OK') {
-      setExpiryInfo({ expiresAt: result.expiresAt, expiringSoonDays: result.expiringSoonDays });
+      const info = {
+        expiresAt: result.expiresAt,
+        daysRemaining: result.daysRemaining,
+        expiringSoonDays: result.expiringSoonDays,
+        licenseKey: result.licenseKey,
+        clientName: result.clientName
+      };
+      setExpiryInfo(info);
+
+      // 🔔 15 days before license expire, show message on startup
+      if (result.expiringSoonDays != null && !hasShownStartupAlert.current) {
+        hasShownStartupAlert.current = true;
+        Swal.fire({
+          icon: 'warning',
+          title: '⚠️ License Expiring Soon!',
+          html: `
+            <div class="text-center space-y-3">
+              <p class="text-xs text-gray-600 font-bold">Your SapSan POS license will expire in:</p>
+              <div class="inline-block bg-amber-100 border border-amber-300 text-amber-900 font-black text-2xl px-6 py-2 rounded-2xl shadow-sm">
+                ${result.expiringSoonDays} Day${result.expiringSoonDays === 1 ? '' : 's'} Remaining
+              </div>
+              <p class="text-[11px] text-gray-500">
+                Expiration Date: <b>${result.expiresAt ? new Date(result.expiresAt).toLocaleDateString() : 'Soon'}</b><br/>
+                Please contact <b>${DEVELOPER_CREDIT_LINE_1}</b> (${DEVELOPER_CREDIT_LINE_2}) to renew your license.
+              </p>
+            </div>
+          `,
+          confirmButtonText: 'I Understand',
+          confirmButtonColor: '#f59e0b',
+          customClass: { popup: 'rounded-3xl' }
+        });
+      }
     }
   };
 
@@ -71,19 +115,33 @@ export default function LicenseGate({ children }) {
   }
 
   if (status === 'OK') {
+    const value = {
+      status,
+      expiresAt: expiryInfo?.expiresAt || null,
+      daysRemaining: expiryInfo?.daysRemaining ?? null,
+      expiringSoonDays: expiryInfo?.expiringSoonDays ?? null,
+      licenseKey: expiryInfo?.licenseKey || null,
+      clientName: expiryInfo?.clientName || null,
+      runCheck
+    };
+
     return (
-      <>
+      <LicenseContext.Provider value={value}>
         {expiryInfo?.expiringSoonDays != null && !dismissedWarning && (
-          <div className="bg-amber-500 text-white text-xs font-black px-4 py-2 flex items-center justify-between print:hidden">
-            <span>
-              ⚠️ Your license expires in {expiryInfo.expiringSoonDays} day{expiryInfo.expiringSoonDays === 1 ? '' : 's'}
-              {' '}— contact {DEVELOPER_CREDIT_LINE_1} ({DEVELOPER_CREDIT_LINE_2}) to renew.
-            </span>
-            <button onClick={() => setDismissedWarning(true)} className="ml-3 text-white/80 hover:text-white font-black">✕</button>
+          <div className="bg-amber-500 text-white text-xs font-black px-4 py-2 flex items-center justify-between print:hidden shadow-sm">
+            <div className="flex items-center gap-2">
+              <span className="text-base">⚠️</span>
+              <span>
+                <b>License Expiration Warning:</b> Only {expiryInfo.expiringSoonDays} day{expiryInfo.expiringSoonDays === 1 ? '' : 's'} remaining
+                (Expires: {expiryInfo.expiresAt ? new Date(expiryInfo.expiresAt).toLocaleDateString() : 'Soon'})
+                — Contact {DEVELOPER_CREDIT_LINE_1} ({DEVELOPER_CREDIT_LINE_2}) to renew.
+              </span>
+            </div>
+            <button onClick={() => setDismissedWarning(true)} className="ml-3 bg-white/20 hover:bg-white/30 text-white px-2 py-0.5 rounded-lg text-xs font-black transition">✕ Dismiss</button>
           </div>
         )}
         {children}
-      </>
+      </LicenseContext.Provider>
     );
   }
 

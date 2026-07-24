@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import Swal from 'sweetalert2';
+import { useLicense } from './LicenseGate';
 import {
   getBillDesignSettings,
   saveBillDesignSettings,
@@ -85,6 +86,9 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
 
   // Retrieve db.admins structure directly from db.js
   const admins = useLiveQuery(() => db.admins.toArray()) || [];
+
+  // License subscription state from LicenseContext
+  const { daysRemaining, expiresAt } = useLicense();
 
   // Navigation state inside admin
   const [activeSubTab, setActiveSubTab] = useState('CATEGORIES'); // CATEGORIES, ITEMS, REPORTS, PRINTERS, BILL_DESIGN, PROFILE
@@ -3716,6 +3720,49 @@ export default function AdminPanel({ onBackToBilling, currentUser, onLogout }) {
         {/* 🧑‍💼 PROFILE SETTINGS WORKSPACE */}
         {activeSubTab === 'PROFILE' && (
           <>
+            {/* 🔑 License & Subscription Information Card */}
+            <div className="md:col-span-12 bg-white p-5 rounded-2xl border shadow-xs space-y-3">
+              <div className="flex items-center justify-between border-b pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-indigo-100 text-indigo-700 flex items-center justify-center text-xl font-black">
+                    🔑
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-gray-800">License &amp; Subscription Information</h3>
+                    <p className="text-[11px] text-gray-500">Active Installation &amp; Expiration Details</p>
+                  </div>
+                </div>
+                <span className={`px-3 py-1 rounded-full text-xs font-black border ${
+                  daysRemaining != null && daysRemaining <= 15
+                    ? 'bg-amber-100 border-amber-300 text-amber-900 animate-pulse'
+                    : 'bg-emerald-100 border-emerald-300 text-emerald-800'
+                }`}>
+                  {daysRemaining != null ? `${daysRemaining} Days Remaining` : 'Status: OK'}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                <div className="bg-gray-50 p-3 rounded-xl border">
+                  <span className="text-[10px] font-black text-gray-400 uppercase">License Status</span>
+                  <p className="text-xs font-black text-emerald-600 mt-0.5">ACTIVE ✅</p>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-xl border">
+                  <span className="text-[10px] font-black text-gray-400 uppercase">Days Remaining</span>
+                  <p className={`text-xs font-black mt-0.5 ${daysRemaining != null && daysRemaining <= 15 ? 'text-red-600 font-black' : 'text-gray-800'}`}>
+                    {daysRemaining != null ? `${daysRemaining} Days` : 'Active'}
+                  </p>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-xl border">
+                  <span className="text-[10px] font-black text-gray-400 uppercase">Expiration Date</span>
+                  <p className="text-xs font-bold text-gray-800 mt-0.5">
+                    {expiresAt ? new Date(expiresAt).toLocaleDateString() : 'N/A'}
+                  </p>
+                </div>
+              </div>
+              <div className="text-right pt-1 text-[11px] text-gray-400 font-bold">
+                Need license renewal or key extension? Contact <b>{DEVELOPER_CREDIT_LINE_1}</b> ({DEVELOPER_CREDIT_LINE_2})
+              </div>
+            </div>
+
             {/* Form Column */}
             <div className="md:col-span-4 bg-white p-4 rounded-2xl border h-full flex flex-col justify-between">
               <form onSubmit={handleSaveAdmin} className="space-y-4">

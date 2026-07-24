@@ -134,7 +134,7 @@ export default function DayEndReport({ onBack, onDayClosed }) {
         // Auto print the Day End report using the thermal printer setup
         await performThermalPrint(updated);
 
-        Swal.fire({ icon: 'success', title: 'Day Closed Successfully! ✅', text: `Closed by ${matchedAdmin.username}`, confirmButtonColor: '#059669' });
+        await Swal.fire({ icon: 'success', title: 'Day Closed Successfully! ✅', text: `Closed by ${matchedAdmin.username}`, confirmButtonColor: '#059669' });
         if (onDayClosed) onDayClosed();
       } else {
         Swal.fire({ icon: 'error', title: 'Invalid Credentials!', text: 'Username or Password is incorrect, or you do not have Admin privileges.', confirmButtonColor: '#ef4444' });

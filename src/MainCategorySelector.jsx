@@ -6,7 +6,7 @@ import Swal from 'sweetalert2';
 import { mainCategoryDb } from './mainCategoryUtils';
 import { printViaBluetooth, generateAdvanceReceiptHtml } from './printUtils';
 
-export default function MainCategorySelector({ onSelect, onLogout, currentUser }) {
+export default function MainCategorySelector({ onSelect, currentUser, onNavigateToDayEnd }) {
   const categories = useLiveQuery(() => mainCategoryDb.categories.orderBy('sortOrder').toArray()) || [];
   const allAdvanceBookings = useLiveQuery(() => db.advanceBookings.toArray()) || [];
   const activeAdvanceBookings = allAdvanceBookings.filter(b => b.status === 'ACTIVE');
@@ -125,12 +125,14 @@ export default function MainCategorySelector({ onSelect, onLogout, currentUser }
 
   return (
     <div className="min-h-screen w-full flex flex-col justify-between bg-gradient-to-br from-indigo-950 via-slate-900 to-indigo-900 p-6 relative">
-      {onLogout && (
+      {/* 📊 DAY END BUTTON IN TOP RIGHT CORNER */}
+      {onNavigateToDayEnd && (
         <button
-          onClick={onLogout}
-          className="absolute top-4 right-4 bg-white/10 hover:bg-white/20 text-white/80 hover:text-white px-3 py-2 rounded-xl font-black text-xs transition"
+          onClick={onNavigateToDayEnd}
+          className="absolute top-4 right-4 bg-white/10 hover:bg-white/20 text-white/90 hover:text-white px-4 py-2.5 rounded-xl font-black text-xs transition flex items-center gap-2 border border-white/20 shadow-md cursor-pointer"
         >
-          🚪 Logout{currentUser ? ` (${currentUser.username})` : ''}
+          <span>📊</span>
+          <span>Day End</span>
         </button>
       )}
 

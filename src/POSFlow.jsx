@@ -5,7 +5,7 @@ import SubEntitySelector from './SubEntitySelector';
 import BillingScreen from './BillingScreen';
 import { ensureDefaultMainCategories } from './mainCategoryUtils';
 
-export default function POSFlow({ currentUser, onLogout, activeDaySession }) {
+export default function POSFlow({ currentUser, onLogout, activeDaySession, onNavigateToDayEnd }) {
   const [mainCategory, setMainCategory] = useState(null);
   const [entityName, setEntityName] = useState(null);
 
@@ -15,7 +15,13 @@ export default function POSFlow({ currentUser, onLogout, activeDaySession }) {
 
   // Stage 1 — pick Dine-in / Take-Away / etc.
   if (!mainCategory) {
-    return <MainCategorySelector onSelect={setMainCategory} onLogout={onLogout} currentUser={currentUser} />;
+    return (
+      <MainCategorySelector
+        onSelect={setMainCategory}
+        currentUser={currentUser}
+        onNavigateToDayEnd={onNavigateToDayEnd}
+      />
+    );
   }
 
   // Stage 2 — pick a table or order slot within that category

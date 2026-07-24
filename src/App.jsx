@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import POSFlow from './POSFlow';
 import AdminPanel from './AdminPanel';
 import DashboardScreen from './DashboardScreen';
@@ -11,13 +11,15 @@ import { runDailyBackupIfNeeded } from './backupUtils';
 import { initLanSync, onSyncConnectionChange, getSyncStatus } from './lanSync';
 import { getActiveSession, startNewDaySession } from './dayEndUtils';
 import { logActivity } from './auditUtils';
-import LicenseGate from './LicenseGate';
+import LicenseGate, { useLicense } from './LicenseGate';
+import { DEVELOPER_CREDIT_LINE_1, DEVELOPER_CREDIT_LINE_2 } from './printUtils';
 import Swal from 'sweetalert2';
 import QuickCalculatorModal from './QuickCalculatorModal';
 
 import { db, cleanupOrphanedPendingOrders } from './db';
 
 function AppContent() {
+  const { daysRemaining, expiringSoonDays, expiresAt, licenseKey, clientName } = useLicense();
   const [session, setSession] = useState(() => getSession());
   const [currentScreen, setCurrentScreen] = useState('BILLING'); // BILLING, ADMIN, or DASHBOARD
   const [isCalcOpen, setIsCalcOpen] = useState(false);
@@ -71,8 +73,13 @@ function AppContent() {
     }
   };
 
+  const isStartDayPromptOpenRef = useRef(false);
+
   const triggerStartDayPrompt = () => {
     if (!session) return;
+    if (isStartDayPromptOpenRef.current || Swal.isVisible()) return;
+    isStartDayPromptOpenRef.current = true;
+
     const todayStr = new Date().toISOString().split('T')[0];
     Swal.fire({
       title: '🟢 Start Business Day?',
@@ -84,6 +91,7 @@ function AppContent() {
       confirmButtonColor: '#059669',
       cancelButtonColor: '#6b7280'
     }).then(async (result) => {
+      isStartDayPromptOpenRef.current = false;
       if (result.isConfirmed) {
         try {
           const newSession = await startNewDaySession(session.username);
@@ -116,6 +124,12 @@ function AppContent() {
   useEffect(() => {
     checkActiveSession();
   }, [session]);
+
+  const handleDayClosed = async () => {
+    await checkActiveSession();
+    setBillingResetKey((k) => k + 1);
+    setCurrentScreen('BILLING');
+  };
 
   // Automatically prompt to start the day when entering the Billing Screen if day session is not started
   useEffect(() => {
@@ -199,6 +213,47 @@ function AppContent() {
           >
             <span>🧮</span>
           </button>
+
+          {/* 🔑 License Status Badge — Shown ONLY when 15 days or fewer remain before license expiration */}
+          {daysRemaining != null && daysRemaining <= 15 && (
+            <button
+              onClick={() => {
+                Swal.fire({
+                  title: '🔑 License Expiration Warning',
+                  html: `
+                    <div class="text-left space-y-3 text-xs font-bold text-gray-700">
+                      <div class="bg-amber-50 border border-amber-200 p-3.5 rounded-2xl space-y-2">
+                        <div class="flex justify-between items-center">
+                          <span class="text-gray-500">License Status:</span>
+                          <span class="font-black text-amber-800 bg-amber-100 px-2 py-0.5 rounded-md text-[11px]">EXPIRING SOON</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                          <span class="text-gray-500">Days Remaining:</span>
+                          <span class="font-black text-red-600 text-sm">
+                            ${daysRemaining} Days
+                          </span>
+                        </div>
+                        ${expiresAt ? `<div class="flex justify-between items-center"><span class="text-gray-500">Expiration Date:</span><span class="font-black text-gray-800">${new Date(expiresAt).toLocaleDateString()}</span></div>` : ''}
+                        ${clientName ? `<div class="flex justify-between items-center"><span class="text-gray-500">Licensed To:</span><span class="font-bold text-gray-700">${clientName}</span></div>` : ''}
+                      </div>
+                      <p class="text-[11px] text-gray-400 text-center pt-1">
+                        To renew or extend your subscription, contact:<br/>
+                        <b class="text-gray-700">${DEVELOPER_CREDIT_LINE_1}</b> (${DEVELOPER_CREDIT_LINE_2})
+                      </p>
+                    </div>
+                  `,
+                  confirmButtonText: 'Close',
+                  confirmButtonColor: '#f59e0b',
+                  customClass: { popup: 'rounded-3xl' }
+                });
+              }}
+              title="License expiring soon! Click to view details"
+              className="flex items-center space-x-1 px-2.5 py-1 rounded-xl text-xs font-black border cursor-pointer hover:opacity-80 transition ml-1 bg-amber-100 border-amber-300 text-amber-900 animate-pulse shadow-xs"
+            >
+              <span>🔑</span>
+              <span>{daysRemaining}d Left</span>
+            </button>
+          )}
         </div>
 
         {/* Dynamic Navigation Tabs */}
@@ -208,13 +263,6 @@ function AppContent() {
             className={`px-4 py-2 text-xs font-black rounded-xl transition ${currentScreen === 'BILLING' ? 'bg-indigo-50 text-indigo-600 border border-indigo-200' : 'text-gray-500 hover:bg-gray-50'}`}
           >
             🛒 Billing Screen {!activeDaySession && '🔒'}
-          </button>
-
-          <button
-            onClick={() => handleTabClick('DAY_END')}
-            className={`px-4 py-2 text-xs font-black rounded-xl transition ${currentScreen === 'DAY_END' ? 'bg-indigo-50 text-indigo-600 border border-indigo-200' : 'text-gray-500 hover:bg-gray-50'}`}
-          >
-            📊 Day End
           </button>
 
           {isAdmin && (
@@ -322,14 +370,25 @@ function AppContent() {
                   <span className="text-gray-400">Started At:</span>
                   <span className="font-bold">{new Date(activeDaySession.startedAt).toLocaleString()}</span>
                 </div>
-                <div className="flex justify-between">
+                <div className="flex justify-between border-b pb-1">
                   <span className="text-gray-400">Started By:</span>
                   <span className="font-bold text-gray-900">{activeDaySession.startedBy}</span>
+                </div>
+                <div className="flex justify-between pt-1">
+                  <span className="text-gray-400">License Status:</span>
+                  <span className={`font-black ${daysRemaining != null && daysRemaining <= 15 ? 'text-red-600' : 'text-emerald-700'}`}>
+                    🔑 {daysRemaining != null ? `${daysRemaining} Days Left` : 'Active'}
+                  </span>
                 </div>
               </div>
             ) : (
               <div className="bg-red-50 border border-red-200 rounded-2xl p-3 text-red-700 font-bold text-center">
                 🔴 Day Status: CLOSED
+                {daysRemaining != null && (
+                  <div className="text-[11px] font-black text-gray-600 mt-1">
+                    🔑 License: <span className={daysRemaining <= 15 ? 'text-red-600 font-black' : 'text-emerald-700'}>{daysRemaining} Days Remaining</span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -391,11 +450,17 @@ function AppContent() {
         ) : (
           <>
             {currentScreen === 'BILLING' && (
-              <POSFlow key={billingResetKey} currentUser={session} onLogout={handleLogout} activeDaySession={activeDaySession} />
+              <POSFlow
+                key={billingResetKey}
+                currentUser={session}
+                onLogout={handleLogout}
+                activeDaySession={activeDaySession}
+                onNavigateToDayEnd={() => setCurrentScreen('DAY_END')}
+              />
             )}
 
             {currentScreen === 'DAY_END' && (
-              <DayEndReport onBack={() => setCurrentScreen('BILLING')} onDayClosed={checkActiveSession} />
+              <DayEndReport onBack={() => setCurrentScreen('BILLING')} onDayClosed={handleDayClosed} />
             )}
 
             {currentScreen === 'DASHBOARD' && isAdmin && (
